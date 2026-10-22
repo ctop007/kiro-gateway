@@ -4,7 +4,7 @@
 
 **Gateway proxy untuk Kiro API (Amazon Q Developer / AWS CodeWhisperer)**
 
-[🇬🇧 English](../../README.md) • [🇷🇺 Русский](../ru/README.md) • [🇨🇳 中文](../zh/README.md) • [🇪🇸 Español](../es/README.md) • 🇮🇩 Indonesia • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • [🇰🇷 한국어](../ko/README.md)
+[🇬🇧 English](../upstream/README.md) • [🇷🇺 Русский](../ru/README.md) • [🇨🇳 中文](../zh/README.md) • [🇪🇸 Español](../es/README.md) • 🇮🇩 Indonesia • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • [🇰🇷 한국어](../ko/README.md)
 
 Dibuat dengan ❤️ oleh [@Jwadow](https://github.com/jwadow)
 

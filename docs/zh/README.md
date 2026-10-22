@@ -4,7 +4,7 @@
 
 **Kiro API (Amazon Q Developer / AWS CodeWhisperer) 代理网关**
 
-[🇬🇧 English](../../README.md) • [🇷🇺 Русский](../ru/README.md) • 🇨🇳 中文 • [🇪🇸 Español](../es/README.md) • [🇮🇩 Indonesia](../id/README.md) • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • [🇰🇷 한국어](../ko/README.md)
+[🇬🇧 English](../upstream/README.md) • [🇷🇺 Русский](../ru/README.md) • 🇨🇳 中文 • [🇪🇸 Español](../es/README.md) • [🇮🇩 Indonesia](../id/README.md) • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • [🇰🇷 한국어](../ko/README.md)
 
 由 [@Jwadow](https://github.com/jwadow) 用 ❤️ 制作
 

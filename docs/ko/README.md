@@ -4,7 +4,7 @@
 
 **Kiro API (Amazon Q Developer / AWS CodeWhisperer) 프록시 게이트웨이**
 
-[🇬🇧 English](../../README.md) • [🇷🇺 Русский](../ru/README.md) • [🇨🇳 中文](../zh/README.md) • [🇪🇸 Español](../es/README.md) • [🇮🇩 Indonesia](../id/README.md) • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • 🇰🇷 한국어
+[🇬🇧 English](../upstream/README.md) • [🇷🇺 Русский](../ru/README.md) • [🇨🇳 中文](../zh/README.md) • [🇪🇸 Español](../es/README.md) • [🇮🇩 Indonesia](../id/README.md) • [🇧🇷 Português](../pt/README.md) • [🇯🇵 日本語](../ja/README.md) • 🇰🇷 한국어
 
 [@Jwadow](https://github.com/jwadow)가 ❤️를 담아 제작
 
