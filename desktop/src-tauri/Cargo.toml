@@ -1,0 +1,45 @@
+[package]
+name = "kiro-gateway-desktop"
+version = "0.0.1"
+description = "Kiro Gateway desktop app"
+edition = "2021"
+
+[[bin]]
+name = "kiro-gateway-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.1", features = [] }
+
+[dependencies]
+# tray-icon + image-png: the status tray (src/tray.rs) loads icons/32x32.png.
+tauri = { version = "=2.11.1", features = ["tray-icon", "image-png"] }
+# Must be the first registered plugin: only one app instance per user session.
+tauri-plugin-single-instance = "=2.4.5"
+tauri-plugin-opener = "=2.5.4"
+tauri-plugin-clipboard-manager = "=2.3.2"
+tauri-plugin-autostart = "=2.5.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+# Local-offset ISO 8601 timestamps for GatewayStatus.since / failure.at and backup names.
+chrono = "=0.4.44"
+# 32 random bytes for the access secret (OS CSPRNG, already in the tree via tauri).
+getrandom = "=0.3.4"
+
+[target.'cfg(unix)'.dependencies]
+# kill(2) for SIGTERM / liveness checks and proc_pidpath on macOS (pid file reclaim).
+libc = "=0.2.186"
+
+[target.'cfg(windows)'.dependencies]
+# Job Object (kill sidecar with the app), process image path and TerminateProcess.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true

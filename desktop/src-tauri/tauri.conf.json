@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kiro Gateway",
+  "version": "0.0.1",
+  "identifier": "dev.kirogateway.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kiro Gateway",
+        "width": 880,
+        "height": 600,
+        "minWidth": 760,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/gateway/": "gateway/"
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "Kiro Gateway 桌面端",
+    "longDescription": "在本机运行 Kiro Gateway，并提供 kclaude 命令。"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://tools-1254376798.cos.ap-guangzhou.myqcloud.com/kiro-gateway/desktop/latest.json"
+      ]
+    }
+  }
+}
