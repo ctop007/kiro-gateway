@@ -366,6 +366,14 @@ TRUNCATION_RECOVERY: bool = os.getenv("TRUNCATION_RECOVERY", "true").lower() in 
 # proxies (e.g. LiteLLM) treat `cost` as a real charge and would mis-bill.
 EXPOSE_CREDITS_USED: bool = os.getenv("EXPOSE_CREDITS_USED", "false").lower() in ("true", "1", "yes")
 
+# Directory for the structured per-request log (see kiro/request_log.py).
+# When set, every /v1/chat/completions and /v1/messages request appends one JSON
+# line (time, api, model, status, duration, credits - never message content) to
+# <dir>/requests-YYYY-MM.jsonl. Empty (default) disables it entirely.
+# The desktop app sets this to read credits per request.
+_raw_request_log_dir: str = os.getenv("REQUEST_LOG_DIR", "").strip()
+REQUEST_LOG_DIR: str = os.path.expanduser(_raw_request_log_dir) if _raw_request_log_dir else ""
+
 # ==================================================================================================
 # Logging Settings
 # ==================================================================================================

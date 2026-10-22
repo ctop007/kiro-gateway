@@ -1259,3 +1259,57 @@ class TestStreamKeepaliveIntervalConfig:
             
             print(f"STREAM_KEEPALIVE_INTERVAL: {config_module.STREAM_KEEPALIVE_INTERVAL}")
             assert config_module.STREAM_KEEPALIVE_INTERVAL == 0.0
+
+
+class TestRequestLogDirConfig:
+    """Tests for REQUEST_LOG_DIR configuration (structured per-request log)."""
+
+    def test_request_log_dir_defaults_to_empty(self):
+        """
+        What it does: Verifies the request log is disabled when REQUEST_LOG_DIR is unset.
+        Purpose: Gateway users who do not opt in must see no new files.
+        """
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REQUEST_LOG_DIR", None)
+            import importlib
+            import kiro.config as config_module
+            importlib.reload(config_module)
+
+            assert config_module.REQUEST_LOG_DIR == ""
+
+    def test_request_log_dir_reads_env(self):
+        """
+        What it does: Verifies REQUEST_LOG_DIR is read from the environment.
+        Purpose: The desktop app enables the log by passing this variable.
+        """
+        with patch.dict(os.environ, {"REQUEST_LOG_DIR": "/tmp/kgw-logs"}):
+            import importlib
+            import kiro.config as config_module
+            importlib.reload(config_module)
+
+            assert config_module.REQUEST_LOG_DIR == "/tmp/kgw-logs"
+
+    def test_request_log_dir_strips_whitespace(self):
+        """
+        What it does: Verifies a whitespace-only value is treated as disabled.
+        Purpose: A stray space in .env must not create a directory named " ".
+        """
+        with patch.dict(os.environ, {"REQUEST_LOG_DIR": "   "}):
+            import importlib
+            import kiro.config as config_module
+            importlib.reload(config_module)
+
+            assert config_module.REQUEST_LOG_DIR == ""
+
+    def test_request_log_dir_expands_user_home(self):
+        """
+        What it does: Verifies "~" in REQUEST_LOG_DIR is expanded.
+        Purpose: .env values like "~/logs" must not create a literal "~" directory.
+        """
+        with patch.dict(os.environ, {"REQUEST_LOG_DIR": "~/kgw-logs"}):
+            import importlib
+            import kiro.config as config_module
+            importlib.reload(config_module)
+
+            assert config_module.REQUEST_LOG_DIR == os.path.expanduser("~/kgw-logs")
+            assert "~" not in config_module.REQUEST_LOG_DIR

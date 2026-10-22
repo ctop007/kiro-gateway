@@ -49,6 +49,12 @@ from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.converters_openai import build_kiro_payload
 from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
+from kiro.request_log import (
+    RequestRecord,
+    finish_streaming_request_record,
+    start_request_record,
+    track_request,
+)
 from kiro.http_client import KiroHttpClient
 from kiro.kiro_errors import build_openai_error_body
 from kiro.utils import generate_conversation_id
@@ -222,6 +228,36 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/chat/completions (model={request_data.model}, stream={request_data.stream})")
+    record = start_request_record(
+        api="openai", model=request_data.model, stream=bool(request_data.stream)
+    )
+    return await track_request(
+        record, lambda: _chat_completions_impl(request, request_data, record)
+    )
+
+
+async def _chat_completions_impl(
+    request: Request,
+    request_data: ChatCompletionRequest,
+    record: RequestRecord,
+):
+    """
+    Body of the chat completions endpoint.
+
+    Split out so chat_completions() can wrap every exit in track_request().
+
+    Args:
+        request: FastAPI Request for accessing app.state
+        request_data: Request in OpenAI ChatCompletionRequest format
+        record: Request log record for this request
+
+    Returns:
+        StreamingResponse for streaming mode
+        JSONResponse for non-streaming mode
+
+    Raises:
+        HTTPException: On validation or API errors
+    """
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
@@ -434,7 +470,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                     auth_manager=auth_manager,
                                     initial_response=response,
                                     request_messages=messages_for_tokenizer,
-                                    request_tools=tools_for_tokenizer
+                                    request_tools=tools_for_tokenizer,
+                                    request_record=record,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -464,7 +501,9 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                         debug_logger.flush_on_error(500, str(streaming_error))
                                     else:
                                         debug_logger.discard_buffers()
+                                finish_streaming_request_record(record, streaming_error, client_disconnected)
                         
+                        record.stream_owned = True
                         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
                     
                     else:
@@ -476,7 +515,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             model_cache,
                             auth_manager,
                             request_messages=messages_for_tokenizer,
-                            request_tools=tools_for_tokenizer
+                            request_tools=tools_for_tokenizer,
+                            request_record=record,
                         )
                         
                         await http_client.close()
@@ -724,7 +764,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         auth_manager=auth_manager,
                         initial_response=response,
                         request_messages=messages_for_tokenizer,
-                        request_tools=tools_for_tokenizer
+                        request_tools=tools_for_tokenizer,
+                        request_record=record,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -757,7 +798,9 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             debug_logger.flush_on_error(500, str(streaming_error))
                         else:
                             debug_logger.discard_buffers()
+                    finish_streaming_request_record(record, streaming_error, client_disconnected)
             
+            record.stream_owned = True
             return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
         
         else:
@@ -770,7 +813,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 model_cache,
                 auth_manager,
                 request_messages=messages_for_tokenizer,
-                request_tools=tools_for_tokenizer
+                request_tools=tools_for_tokenizer,
+                request_record=record,
             )
             
             await http_client.close()

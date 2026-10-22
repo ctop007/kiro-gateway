@@ -5,6 +5,7 @@ Unit tests for exception handlers.
 Tests validation error handling and debug logging integration.
 """
 
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import Request
@@ -289,3 +290,92 @@ class TestValidationExceptionHandlerEdgeCases:
             
             body = json.loads(response.body.decode())
             assert "Привет мир" in body["body"]
+
+
+class TestValidationExceptionHandlerRequestLog:
+    """422 responses on model endpoints are written to the request log."""
+
+    @staticmethod
+    def _request(path, body):
+        mock_request = MagicMock(spec=Request)
+        mock_request.body = AsyncMock(return_value=body)
+        mock_request.url = MagicMock()
+        mock_request.url.path = path
+        return mock_request
+
+    @staticmethod
+    def _exc():
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [
+            {"type": "missing", "loc": ["body", "max_tokens"], "msg": "Field required", "input": {}}
+        ]
+        return mock_exc
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path, api", [("/v1/messages", "anthropic"), ("/v1/chat/completions", "openai")])
+    async def test_validation_error_writes_request_record(self, path, api, request_log_dir):
+        """
+        What it does: Handles a 422 on each model endpoint.
+        Purpose: Malformed client requests show up in the log with the model they asked for.
+        """
+        from kiro.exceptions import validation_exception_handler
+
+        body = b'{"model": "claude-opus-4.5", "stream": true, "messages": []}'
+        with patch('kiro.debug_logger.debug_logger'):
+            response = await validation_exception_handler(self._request(path, body), self._exc())
+
+        assert response.status_code == 422
+        row = request_log_dir.single()
+        assert row["api"] == api
+        assert row["model"] == "claude-opus-4.5"
+        assert row["stream"] is True
+        assert row["status"] == 422
+        assert row["outcome"] == "error"
+        assert "max_tokens" in row["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"invalid": json}', b"", b"[1, 2, 3]", b'{"model": 42, "stream": "yes"}', b"\xff\xfe"],
+    )
+    async def test_validation_error_with_unparseable_body(self, body, request_log_dir):
+        """
+        What it does: Handles 422 for bodies that are not JSON objects or have wrong types.
+        Purpose: Model and stream fall back to null/false instead of crashing the handler.
+        """
+        from kiro.exceptions import validation_exception_handler
+
+        with patch('kiro.debug_logger.debug_logger'):
+            response = await validation_exception_handler(self._request("/v1/messages", body), self._exc())
+
+        assert response.status_code == 422
+        row = request_log_dir.single()
+        assert row["model"] is None
+        assert row["stream"] is False
+
+    @pytest.mark.asyncio
+    async def test_validation_error_on_other_paths_not_logged(self, request_log_dir):
+        """
+        What it does: Handles a 422 on /v1/messages/count_tokens.
+        Purpose: Only model requests are logged.
+        """
+        from kiro.exceptions import validation_exception_handler
+
+        with patch('kiro.debug_logger.debug_logger'):
+            await validation_exception_handler(self._request("/v1/messages/count_tokens", b"{}"), self._exc())
+
+        assert request_log_dir.records() == []
+
+    @pytest.mark.asyncio
+    async def test_validation_error_does_not_log_body_content(self, request_log_dir):
+        """
+        What it does: Handles a 422 whose body contains message text.
+        Purpose: The 422 row must not carry user content from the body.
+        """
+        from kiro.exceptions import validation_exception_handler
+
+        body = b'{"model": "m", "messages": [{"role": "user", "content": "SECRET-PROMPT"}]}'
+        with patch('kiro.debug_logger.debug_logger'):
+            await validation_exception_handler(self._request("/v1/messages", body), self._exc())
+
+        assert "SECRET-PROMPT" not in json.dumps(request_log_dir.single())

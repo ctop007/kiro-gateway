@@ -11,6 +11,7 @@ import asyncio
 import json
 import pytest
 import time
+from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, List
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from datetime import datetime, timezone
@@ -1852,3 +1853,43 @@ def temp_account_credentials_files(tmp_path):
     files["account3"] = str(account3)
     
     return files
+
+
+# =============================================================================
+# Request Log Fixtures
+# =============================================================================
+
+class RequestLogReader:
+    """Reads back records written by kiro.request_log during a test."""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+
+    def records(self) -> list:
+        """Return every record written so far, in write order."""
+        result = []
+        for path in sorted(self.directory.glob("requests-*.jsonl")):
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                result.append(json.loads(raw))
+        return result
+
+    def single(self) -> dict:
+        """Return the only record written, failing if there is not exactly one."""
+        records = self.records()
+        assert len(records) == 1, f"expected exactly 1 request record, got {len(records)}: {records}"
+        return records[0]
+
+
+@pytest.fixture
+def request_log_dir(tmp_path):
+    """
+    Enables the structured request log in a temporary directory.
+
+    Yields a RequestLogReader for the written records.
+    """
+    from kiro import request_log
+
+    directory = tmp_path / "request-log"
+    with patch.object(request_log, "REQUEST_LOG_DIR", str(directory)):
+        request_log._write_failure_warned = False
+        yield RequestLogReader(directory)

@@ -46,6 +46,7 @@ from kiro.config import (
     EXPOSE_CREDITS_USED,
 )
 from kiro.tokenizer import count_tokens, count_message_tokens, count_tools_tokens
+from kiro.request_log import RequestRecord, OUTCOME_REFUSED
 
 # Import from streaming_core - reuse shared parsing logic
 from kiro.streaming_core import (
@@ -88,7 +89,8 @@ async def stream_kiro_to_openai_internal(
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None,
+    request_record: Optional[RequestRecord] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Internal generator for converting Kiro stream to OpenAI format.
@@ -109,7 +111,9 @@ async def stream_kiro_to_openai_internal(
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
         conversation_id: Stable conversation ID for truncation recovery (optional)
-        conversation_id: Stable conversation ID for truncation recovery (optional)
+        request_record: Request log record to fill with response ID, credits and
+            refusal outcome (optional). Credits are added as metering events
+            arrive, so a stream that fails mid-way still reports what was billed.
     
     Yields:
         Strings in SSE format: "data: {...}\\n\\n" or "data: [DONE]\\n\\n"
@@ -127,6 +131,8 @@ async def stream_kiro_to_openai_internal(
     completion_id = generate_completion_id()
     created_time = int(time.time())
     first_chunk = True
+    if request_record is not None:
+        request_record.response_id = completion_id
     
     metering_data = None
     # Billing credits. Kept apart from metering_data (the cache-token dict) on
@@ -284,6 +290,8 @@ async def stream_kiro_to_openai_internal(
                 # Accumulate - tool calls trigger several upstream calls per request
                 credits_used += event.credits
                 upstream_calls += 1
+                if request_record is not None:
+                    request_record.credits += event.credits
 
             elif event.type == "context_usage" and event.context_usage_percentage is not None:
                 context_usage_percentage = event.context_usage_percentage
@@ -328,6 +336,8 @@ async def stream_kiro_to_openai_internal(
         if upstream_stop and upstream_stop.is_refusal:
             log_upstream_refusal(upstream_stop, model, completion_id)
             finish_reason = OPENAI_REFUSAL_FINISH_REASON
+            if request_record is not None:
+                request_record.outcome = OUTCOME_REFUSED
         elif content_was_truncated:
             finish_reason = "length"
         elif all_tool_calls:
@@ -490,7 +500,8 @@ async def stream_kiro_to_openai(
     model_cache: "ModelInfoCache",
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
-    request_tools: Optional[list] = None
+    request_tools: Optional[list] = None,
+    request_record: Optional[RequestRecord] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to OpenAI format.
@@ -506,6 +517,7 @@ async def stream_kiro_to_openai(
         auth_manager: Authentication manager
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
+        request_record: Request log record to fill (optional)
     
     Yields:
         Strings in SSE format: "data: {...}\\n\\n" or "data: [DONE]\\n\\n"
@@ -513,7 +525,8 @@ async def stream_kiro_to_openai(
     async for chunk in stream_kiro_to_openai_internal(
         client, response, model, model_cache, auth_manager,
         request_messages=request_messages,
-        request_tools=request_tools
+        request_tools=request_tools,
+        request_record=request_record,
     ):
         yield chunk
 
@@ -529,7 +542,8 @@ async def stream_with_first_token_retry(
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL
+    keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL,
+    request_record: Optional[RequestRecord] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout.
@@ -555,6 +569,7 @@ async def stream_with_first_token_retry(
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
         keepalive_interval: Seconds of silence before sending an SSE comment (0 disables)
+        request_record: Request log record to fill (optional, shared across retries)
     
     Yields:
         Strings in SSE format
@@ -595,7 +610,8 @@ async def stream_with_first_token_retry(
             auth_manager,
             first_token_timeout=first_token_timeout,
             request_messages=request_messages,
-            request_tools=request_tools
+            request_tools=request_tools,
+            request_record=request_record,
         ):
             yield chunk
     
@@ -622,7 +638,8 @@ async def collect_stream_response(
     model_cache: "ModelInfoCache",
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
-    request_tools: Optional[list] = None
+    request_tools: Optional[list] = None,
+    request_record: Optional[RequestRecord] = None,
 ) -> dict:
     """
     Collect full response from streaming stream.
@@ -638,6 +655,7 @@ async def collect_stream_response(
         auth_manager: Authentication manager
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
+        request_record: Request log record to fill (optional)
     
     Returns:
         Dictionary with full response in OpenAI chat.completion format
@@ -656,7 +674,8 @@ async def collect_stream_response(
         model_cache,
         auth_manager,
         request_messages=request_messages,
-        request_tools=request_tools
+        request_tools=request_tools,
+        request_record=request_record,
     ):
         if not chunk_str.startswith("data:"):
             continue

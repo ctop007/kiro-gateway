@@ -24,12 +24,23 @@ Contains functions for handling validation errors and other exceptions
 in a JSON-serialization compatible format.
 """
 
-from typing import Any, List, Dict
+import json
+from typing import Any, Dict, List, Optional
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
+
+from kiro.request_log import finish_request_record, start_request_record
+
+
+# Model endpoints whose 422 responses go to the request log, by API surface.
+# Kept in sync with LOGGED_ENDPOINTS in kiro/debug_middleware.py.
+_REQUEST_LOG_API_BY_PATH: Dict[str, str] = {
+    "/v1/chat/completions": "openai",
+    "/v1/messages": "anthropic",
+}
 
 
 def sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -100,7 +111,47 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     except ImportError:
         pass  # debug_logger not available
     
+    _log_validation_failure(request.url.path, body, sanitized_errors)
+    
     return JSONResponse(
         status_code=422,
         content={"detail": sanitized_errors, "body": body_str[:500]},
     )
+
+
+def _log_validation_failure(path: str, body: bytes, errors: List[Dict[str, Any]]) -> None:
+    """
+    Write a request log record for a 422 on a model endpoint.
+
+    The route never runs for these requests, so the model and stream flag are
+    read from the raw body on a best-effort basis. Only the validation error
+    locations and messages are kept, never the body content.
+
+    Args:
+        path: Request path
+        body: Raw request body
+        errors: Sanitized Pydantic validation errors
+    """
+    api = _REQUEST_LOG_API_BY_PATH.get(path)
+    if api is None:
+        return
+
+    model: Optional[str] = None
+    stream = False
+    try:
+        payload = json.loads(body) if body else None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if isinstance(payload, dict):
+        if isinstance(payload.get("model"), str):
+            model = payload["model"]
+        stream = payload.get("stream") is True
+
+    summary = "; ".join(
+        f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('msg', '')}"
+        for error in errors
+    )
+    record = start_request_record(api=api, model=model, stream=stream)
+    record.status = 422
+    record.error = f"Validation error: {summary}" if summary else "Validation error"
+    finish_request_record(record)

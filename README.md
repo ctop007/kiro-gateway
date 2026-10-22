@@ -122,6 +122,7 @@ source "$HOME/kiro-gateway/scripts/kclaude.zsh"
 | `WEB_SEARCH_ENABLED` | `true` | 是否支持 web_search 工具 |
 | `STREAM_KEEPALIVE_INTERVAL` | `10` | 流式输出长时间没有内容时，发送 keepalive 的间隔（秒），`0` 表示关闭 |
 | `EXPOSE_CREDITS_USED` | `false` | 是否在响应的 usage 中附带本次消耗的 credits |
+| `REQUEST_LOG_DIR` | — | 设置后，每个请求在该目录的 `requests-YYYY-MM.jsonl` 里记一行（模型、状态、耗时、credits，不含对话内容）。桌面端用它统计 credits |
 | `DEBUG_MODE` | `off` | `errors`：只保存失败请求的日志；`all`：保存所有请求。日志在 `debug_logs/` 目录 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `VPN_PROXY_URL` | — | 需要走代理时填写，如 `http://127.0.0.1:7890` |
@@ -195,6 +196,7 @@ kiro-cli 数据库里没有 profile 信息。先用 kiro-cli 正常对话一次�
 2. **上下文超长时返回标准错误**：OpenAI 接口返回 `invalid_request_error` / `context_length_exceeded`，Anthropic 接口返回 `invalid_request_error`，并且 message 以 `prompt is too long` 开头，和官方 API 一致，便于客户端识别后压缩上下文。
 3. **修复 #149 的崩溃**：工具名或参数为空时，token 计数会抛异常。
 4. **修复 #225 丢数据**：工具参数同时以字符串和对象两种形式下发时，有一部分会被丢弃。
+5. **结构化请求日志（可选）**：设置 `REQUEST_LOG_DIR` 后，每个请求在 `requests-YYYY-MM.jsonl` 里记一行，包括时间、模型、状态、耗时、credits，不含对话内容。OpenAI / Anthropic、流式 / 非流式四条路径行为一致，失败、拒答、中途断开都会记录。桌面端用它统计 credits。
 
 ### 待办
 

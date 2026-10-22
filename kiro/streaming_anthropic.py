@@ -53,6 +53,7 @@ from kiro.streaming_core import (
     with_keepalive,
 )
 from kiro.tokenizer import count_tokens, estimate_request_tokens
+from kiro.request_log import RequestRecord, OUTCOME_REFUSED
 from kiro.parsers import parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro.config import (
     FIRST_TOKEN_TIMEOUT,
@@ -145,7 +146,8 @@ async def stream_kiro_to_anthropic(
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
     request_system: Optional[Any] = None,
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None,
+    request_record: Optional[RequestRecord] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to Anthropic SSE format.
@@ -163,6 +165,9 @@ async def stream_kiro_to_anthropic(
         request_tools: Original request tools (for token counting)
         request_system: Original system prompt (for token counting)
         conversation_id: Stable conversation ID for truncation recovery (optional)
+        request_record: Request log record to fill with response ID, credits and
+            refusal outcome (optional). Credits are added as metering events
+            arrive, so a stream that fails mid-way still reports what was billed.
     
     Yields:
         Strings in Anthropic SSE format
@@ -171,6 +176,8 @@ async def stream_kiro_to_anthropic(
         FirstTokenTimeoutError: If first token not received within timeout
     """
     message_id = generate_message_id()
+    if request_record is not None:
+        request_record.response_id = message_id
     input_tokens = 0
     output_tokens = 0
     full_content = ""
@@ -541,6 +548,8 @@ async def stream_kiro_to_anthropic(
             elif event.type == "metering" and event.credits:
                 credits_used += event.credits
                 upstream_calls += 1
+                if request_record is not None:
+                    request_record.credits += event.credits
             elif event.type == "stop" and event.stop:
                 upstream_stop = event.stop
 
@@ -668,6 +677,8 @@ async def stream_kiro_to_anthropic(
         if upstream_stop and upstream_stop.is_refusal:
             log_upstream_refusal(upstream_stop, model, message_id)
             stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+            if request_record is not None:
+                request_record.outcome = OUTCOME_REFUSED
         elif content_was_truncated:
             stop_reason = "max_tokens"
         elif tool_blocks:
@@ -758,7 +769,8 @@ async def collect_anthropic_response(
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    request_system: Optional[Any] = None
+    request_system: Optional[Any] = None,
+    request_record: Optional[RequestRecord] = None,
 ) -> dict:
     """
     Collect full response from Kiro stream in Anthropic format.
@@ -773,11 +785,15 @@ async def collect_anthropic_response(
         request_messages: Original request messages (for token counting)
         request_tools: Original request tools (for token counting)
         request_system: Original system prompt (for token counting)
+        request_record: Request log record to fill with response ID, credits and
+            refusal outcome (optional)
     
     Returns:
         Dictionary with full response in Anthropic Messages format
     """
     message_id = generate_message_id()
+    if request_record is not None:
+        request_record.response_id = message_id
     
     # Non-streaming uses the same full-request estimation as streaming
     input_tokens = 0
@@ -791,7 +807,7 @@ async def collect_anthropic_response(
         input_tokens = request_token_stats["total_tokens"]
     
     # Collect stream result
-    result = await collect_stream_to_result(response)
+    result = await collect_stream_to_result(response, request_record=request_record)
     upstream_cache_usage = _extract_cache_usage_fields(result.usage)
 
     # Same line format as the streaming path so both can be parsed alike
@@ -876,6 +892,8 @@ async def collect_anthropic_response(
     if result.stop and result.stop.is_refusal:
         log_upstream_refusal(result.stop, model, message_id)
         stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+        if request_record is not None:
+            request_record.outcome = OUTCOME_REFUSED
     elif content_was_truncated:
         stop_reason = "max_tokens"
     elif result.tool_calls:
@@ -918,7 +936,8 @@ async def stream_with_first_token_retry_anthropic(
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
     request_system: Optional[Any] = None,
-    keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL
+    keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL,
+    request_record: Optional[RequestRecord] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout for Anthropic API.
@@ -942,6 +961,7 @@ async def stream_with_first_token_retry_anthropic(
         request_tools: Original request tools (for fallback token counting)
         request_system: Original system prompt (for fallback token counting)
         keepalive_interval: Seconds of silence before sending a `ping` event (0 disables)
+        request_record: Request log record to fill (optional, shared across retries)
     
     Yields:
         Strings in Anthropic SSE format
@@ -980,6 +1000,7 @@ async def stream_with_first_token_retry_anthropic(
             request_messages=request_messages,
             request_tools=request_tools,
             request_system=request_system,
+            request_record=request_record,
         ):
             yield chunk
     

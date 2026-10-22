@@ -101,6 +101,7 @@ tests/
 │   ├── test_thinking_parser.py     # ThinkingParser tests (FSM for thinking blocks)
 │   ├── test_tokenizer.py           # Tokenizer tests (tiktoken)
 │   ├── test_truncation_recovery.py # Truncation Recovery System tests (synthetic message generation)
+│   ├── test_request_log.py         # Structured per-request log tests (monthly files, one line per request, concurrency, write failures)
 │   ├── test_truncation_state.py    # Truncation state cache tests (save/retrieve, one-time retrieval, thread safety)
 │   └── test_vpn_proxy.py           # VPN/Proxy configuration tests (environment variables, URL normalization, NO_PROXY)
 ├── integration/                     # Integration tests for full flow

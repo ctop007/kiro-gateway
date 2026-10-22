@@ -2351,3 +2351,342 @@ class TestContextOverflowErrorMapping:
         error = response.json()["error"]
         assert error["type"] == "kiro_api_error"
         assert error["code"] == 400
+
+
+# =============================================================================
+# Tests for the structured request log
+# =============================================================================
+
+class TestRequestLog:
+    """
+    Every /v1/chat/completions request leaves exactly one request log record,
+    whatever path it takes out of the route.
+    """
+
+    BODY = {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "Hello"}]}
+
+    @staticmethod
+    def _http_client(mock_kiro_http_client_class, status_code=200, body=b"", side_effect=None):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.aread = AsyncMock(return_value=body)
+        instance = AsyncMock()
+        if side_effect is not None:
+            instance.request_with_retry = AsyncMock(side_effect=side_effect)
+        else:
+            instance.request_with_retry = AsyncMock(return_value=mock_response)
+        instance.close = AsyncMock()
+        instance.client = MagicMock()
+        mock_kiro_http_client_class.return_value = instance
+        return instance
+
+    @staticmethod
+    def _billing_stream(credits=0.42, fail_after=False):
+        """Fake stream_with_first_token_retry that bills credits like the real layer."""
+        async def fake_stream(*args, request_record=None, **kwargs):
+            if request_record is not None:
+                request_record.response_id = "chatcmpl-test"
+                request_record.credits += credits
+            yield 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            if fail_after:
+                raise RuntimeError("upstream connection reset")
+            yield "data: [DONE]\n\n"
+        return fake_stream
+
+    @patch('kiro.routes_openai.stream_with_first_token_retry')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_streaming_success(self, mock_client_class, mock_stream, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: A streaming request completes normally.
+        Purpose: One row with status 200, stream=true, outcome ok and the billed credits.
+        """
+        self._http_client(mock_client_class)
+        mock_stream.side_effect = self._billing_stream(credits=0.42)
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": True})
+
+        assert response.status_code == 200
+        row = request_log_dir.single()
+        assert row["api"] == "openai"
+        assert row["model"] == "claude-sonnet-4-5"
+        assert row["stream"] is True
+        assert row["status"] == 200
+        assert row["outcome"] == "ok"
+        assert row["credits"] == pytest.approx(0.42)
+        assert row["id"] == "chatcmpl-test"
+
+    @patch('kiro.routes_openai.collect_stream_response')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_non_streaming_success(self, mock_client_class, mock_collect, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: A non-streaming request returns a JSON completion.
+        Purpose: One row with status 200, stream=false and the billed credits.
+        """
+        self._http_client(mock_client_class)
+
+        async def fake_collect(*args, request_record=None, **kwargs):
+            request_record.response_id = "chatcmpl-ns"
+            request_record.credits += 0.3
+            return {"id": "chatcmpl-ns", "object": "chat.completion", "choices": []}
+
+        mock_collect.side_effect = fake_collect
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+
+        assert response.status_code == 200
+        row = request_log_dir.single()
+        assert row["stream"] is False
+        assert row["status"] == 200
+        assert row["outcome"] == "ok"
+        assert row["credits"] == pytest.approx(0.3)
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_upstream_402(self, mock_client_class, stream, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: Kiro answers 402 (monthly limit) in both modes.
+        Purpose: The row shows the real status and the user-facing error message.
+        """
+        self._http_client(mock_client_class, status_code=402, body=json.dumps({
+            "message": "You have reached the limit.", "reason": "MONTHLY_REQUEST_COUNT"}).encode())
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": stream})
+
+        assert response.status_code == 402
+        row = request_log_dir.single()
+        assert row["status"] == 402
+        assert row["outcome"] == "error"
+        assert row["stream"] is stream
+        assert row["error"]
+        assert row["credits"] == 0
+
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_network_error_502(self, mock_client_class, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: request_with_retry raises the 502 used for network failures.
+        Purpose: Network errors leave a 502 row instead of nothing.
+        """
+        from fastapi import HTTPException
+        self._http_client(mock_client_class, side_effect=HTTPException(status_code=502, detail="Connection failed"))
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+
+        assert response.status_code == 502
+        row = request_log_dir.single()
+        assert row["status"] == 502
+        assert row["outcome"] == "error"
+        assert "Connection failed" in row["error"]
+
+    @patch('kiro.routes_openai.stream_with_first_token_retry')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_streaming_error_mid_stream_keeps_credits(self, mock_client_class, mock_stream, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: The stream fails after content and billing were already sent.
+        Purpose: Row is an error with the HTTP 200 the client saw and the credits billed so far.
+        """
+        self._http_client(mock_client_class)
+        mock_stream.side_effect = self._billing_stream(credits=0.25, fail_after=True)
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": True})
+
+        assert response.status_code == 200
+        row = request_log_dir.single()
+        assert row["status"] == 200
+        assert row["outcome"] == "error"
+        assert "upstream connection reset" in row["error"]
+        assert row["credits"] == pytest.approx(0.25)
+
+    @patch('kiro.routes_openai.stream_with_first_token_retry')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_refusal_outcome(self, mock_client_class, mock_stream, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: The streaming layer marks the record as refused.
+        Purpose: The route keeps the refusal outcome instead of overwriting it with ok.
+        """
+        from kiro.request_log import OUTCOME_REFUSED
+        self._http_client(mock_client_class)
+
+        async def refused_stream(*args, request_record=None, **kwargs):
+            request_record.outcome = OUTCOME_REFUSED
+            yield "data: [DONE]\n\n"
+
+        mock_stream.side_effect = refused_stream
+
+        test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": True})
+
+        assert request_log_dir.single()["outcome"] == "refused"
+
+    @pytest.mark.asyncio
+    async def test_client_disconnect(self, request_log_dir):
+        """
+        What it does: Closes the streaming generator mid-way (what Starlette does on disconnect).
+        Purpose: Row is written with outcome client_disconnected.
+        """
+        from kiro.request_log import finish_streaming_request_record, start_request_record
+
+        record = start_request_record(api="openai", model="m", stream=True)
+        finish_streaming_request_record(record, streaming_error=None, client_disconnected=True)
+
+        row = request_log_dir.single()
+        assert row["outcome"] == "client_disconnected"
+        assert row["status"] == 200
+
+    @patch('kiro.routes_openai.build_kiro_payload', side_effect=ValueError("Tool name too long"))
+    def test_payload_error_400(self, mock_build, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: Payload building fails with ValueError (mapped to 400).
+        Purpose: Errors raised before any upstream call are logged too.
+        """
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+
+        assert response.status_code == 400
+        row = request_log_dir.single()
+        assert row["status"] == 400
+        assert row["error"] == "Tool name too long"
+
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_unexpected_exception_is_500(self, mock_client_class, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: request_with_retry raises a non-HTTP exception.
+        Purpose: The route's own 500 handling still produces exactly one row.
+        """
+        self._http_client(mock_client_class, side_effect=RuntimeError("boom"))
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+
+        assert response.status_code == 500
+        row = request_log_dir.single()
+        assert row["status"] == 500
+        assert row["outcome"] == "error"
+
+    def test_models_endpoint_not_logged(self, test_client, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: Calls /v1/models and /health.
+        Purpose: Only model requests are logged.
+        """
+        test_client.get("/v1/models", headers={"Authorization": f"Bearer {valid_proxy_api_key}"})
+        test_client.get("/health")
+
+        assert request_log_dir.records() == []
+
+    def test_rejected_api_key_not_logged(self, test_client, invalid_proxy_api_key, request_log_dir):
+        """
+        What it does: Sends a request with a wrong API key.
+        Purpose: Unauthenticated noise (port scanners, wrong clients) must not appear as usage.
+        """
+        test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {invalid_proxy_api_key}"}, json=self.BODY)
+
+        assert request_log_dir.records() == []
+
+    @patch('kiro.routes_openai.stream_with_first_token_retry')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_log_disabled_writes_nothing(self, mock_client_class, mock_stream, test_client, valid_proxy_api_key, tmp_path):
+        """
+        What it does: Runs a request with REQUEST_LOG_DIR empty.
+        Purpose: Default behavior is unchanged and no files appear.
+        """
+        from kiro import request_log
+        self._http_client(mock_client_class)
+        mock_stream.side_effect = self._billing_stream()
+
+        with patch.object(request_log, "REQUEST_LOG_DIR", ""):
+            response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": True})
+
+        assert response.status_code == 200
+        assert list(tmp_path.rglob("requests-*.jsonl")) == []
+
+
+class TestRequestLogAccountSystem:
+    """
+    Request log on the account-system (failover) branch of /v1/chat/completions.
+
+    The TestClient fixture runs in legacy mode, so these tests flip
+    app.state.account_system and provide a fake AccountManager.
+    """
+
+    BODY = {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "Hello"}]}
+
+    @staticmethod
+    def _account():
+        from kiro.account_manager import Account, AccountStats
+        account = Account(
+            id="acc1",
+            auth_manager=MagicMock(),
+            model_cache=MagicMock(),
+            model_resolver=MagicMock(),
+            stats=AccountStats(),
+        )
+        account.auth_manager.api_host = "https://api.example.com"
+        account.auth_manager.profile_arn = "arn:aws:codewhisperer:us-east-1:1:profile/x"
+        return account
+
+    def _enable_account_system(self, app, account):
+        manager = MagicMock()
+        manager._accounts = {account.id: account}
+        manager.get_next_account = AsyncMock(side_effect=[account, None])
+        manager.report_success = AsyncMock()
+        manager.report_failure = AsyncMock()
+        app.state.account_system = True
+        app.state.account_manager = manager
+        return manager
+
+    @patch('kiro.routes_openai.stream_with_first_token_retry')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_account_system_streaming_success(self, mock_client_class, mock_stream, test_client, clean_app, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: Streaming request succeeds on the failover branch.
+        Purpose: The failover branch logs the same row as legacy mode.
+        """
+        TestRequestLog._http_client(mock_client_class)
+        mock_stream.side_effect = TestRequestLog._billing_stream(credits=0.5)
+        original = (clean_app.state.account_system, clean_app.state.account_manager)
+        self._enable_account_system(clean_app, self._account())
+        try:
+            response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**self.BODY, "stream": True})
+        finally:
+            clean_app.state.account_system, clean_app.state.account_manager = original
+
+        assert response.status_code == 200
+        row = request_log_dir.single()
+        assert row["outcome"] == "ok"
+        assert row["credits"] == pytest.approx(0.5)
+
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_account_system_fatal_error(self, mock_client_class, test_client, clean_app, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: Upstream returns a FATAL 400 on the failover branch.
+        Purpose: The immediately returned error is logged once with its status.
+        """
+        TestRequestLog._http_client(mock_client_class, status_code=400, body=json.dumps({
+            "message": "Input is too long.", "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"}).encode())
+        original = (clean_app.state.account_system, clean_app.state.account_manager)
+        self._enable_account_system(clean_app, self._account())
+        try:
+            response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+        finally:
+            clean_app.state.account_system, clean_app.state.account_manager = original
+
+        assert response.status_code == 400
+        row = request_log_dir.single()
+        assert row["status"] == 400
+        assert row["outcome"] == "error"
+
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_account_system_all_accounts_failed(self, mock_client_class, test_client, clean_app, valid_proxy_api_key, request_log_dir):
+        """
+        What it does: The only account fails with a recoverable 429.
+        Purpose: The final "all attempts exhausted" exit is logged with the upstream status.
+        """
+        TestRequestLog._http_client(mock_client_class, status_code=429, body=json.dumps({
+            "message": "Too many requests"}).encode())
+        original = (clean_app.state.account_system, clean_app.state.account_manager)
+        self._enable_account_system(clean_app, self._account())
+        try:
+            response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json=self.BODY)
+        finally:
+            clean_app.state.account_system, clean_app.state.account_manager = original
+
+        assert response.status_code == 429
+        row = request_log_dir.single()
+        assert row["status"] == 429
+        assert row["outcome"] == "error"

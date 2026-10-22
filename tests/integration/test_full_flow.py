@@ -395,3 +395,92 @@ class TestHealthEndpointIntegration:
         assert root_response.json()["version"] == health_response.json()["version"]
         
         print("Health endpoints are consistent")
+
+
+class TestRequestLogConsistency:
+    """
+    The same upstream events produce the same request log row on all four paths:
+    OpenAI / Anthropic x streaming / non-streaming.
+
+    Only the HTTP client and the Kiro event parser are mocked; routes, converters,
+    streaming layers and the request log run for real.
+    """
+
+    UPSTREAM_EVENTS = [
+        ("content", "Hello"),
+        ("metering", 0.0930),
+        ("metering", 0.5290),
+        ("context_usage", 0.42),
+    ]
+
+    @classmethod
+    def _parse_stream(cls):
+        from kiro.streaming_core import KiroEvent
+
+        async def fake_parse_kiro_stream(*args, **kwargs):
+            for kind, value in cls.UPSTREAM_EVENTS:
+                if kind == "content":
+                    yield KiroEvent(type="content", content=value)
+                elif kind == "metering":
+                    yield KiroEvent(type="metering", credits=value)
+                elif kind == "context_usage":
+                    yield KiroEvent(type="context_usage", context_usage_percentage=value)
+        return fake_parse_kiro_stream
+
+    @staticmethod
+    def _http_client(mock_kiro_http_client_class):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.aclose = AsyncMock()
+        instance = AsyncMock()
+        instance.request_with_retry = AsyncMock(return_value=mock_response)
+        instance.close = AsyncMock()
+        instance.client = MagicMock()
+        mock_kiro_http_client_class.return_value = instance
+
+    def _call(self, test_client, api, stream):
+        if api == "openai":
+            return test_client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {PROXY_API_KEY}"},
+                json={"model": "claude-sonnet-4-5", "stream": stream, "messages": [{"role": "user", "content": "Hi"}]},
+            )
+        return test_client.post(
+            "/v1/messages",
+            headers={"x-api-key": PROXY_API_KEY, "anthropic-version": "2023-06-01"},
+            json={"model": "claude-sonnet-4-5", "stream": stream, "max_tokens": 100, "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    @patch('kiro.routes_anthropic.KiroHttpClient')
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_request_log_consistent_across_four_paths(self, mock_openai_client, mock_anthropic_client, test_client, request_log_dir):
+        """
+        What it does: Sends one request on each of the four paths with identical upstream events.
+        Purpose: Rows differ only in api/stream/id/ts/duration_ms; credits match the [Credit] log.
+        """
+        self._http_client(mock_openai_client)
+        self._http_client(mock_anthropic_client)
+        parse_stream = self._parse_stream()
+
+        combinations = [("openai", True), ("openai", False), ("anthropic", True), ("anthropic", False)]
+        with patch('kiro.streaming_openai.parse_kiro_stream', parse_stream), \
+             patch('kiro.streaming_anthropic.parse_kiro_stream', parse_stream), \
+             patch('kiro.streaming_core.parse_kiro_stream', parse_stream):
+            for api, stream in combinations:
+                response = self._call(test_client, api, stream)
+                assert response.status_code == 200, (api, stream, response.text[:200])
+                # Ensure the streaming body is fully consumed
+                _ = response.text
+
+        rows = request_log_dir.records()
+        assert len(rows) == 4
+        assert [(r["api"], r["stream"]) for r in rows] == combinations
+
+        varying = {"api", "stream", "id", "ts", "duration_ms"}
+        normalized = [{k: v for k, v in row.items() if k not in varying} for row in rows]
+        assert all(n == normalized[0] for n in normalized), normalized
+        assert normalized[0]["credits"] == pytest.approx(0.6220)
+        assert normalized[0]["status"] == 200
+        assert normalized[0]["outcome"] == "ok"
+        assert all(row["id"] for row in rows)
+        assert len({row["id"] for row in rows}) == 4

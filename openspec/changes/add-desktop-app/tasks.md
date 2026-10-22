@@ -2,16 +2,16 @@
 
 ## 1. 网关：结构化请求日志（gateway/request-log）
 
-- [ ] 1.1 在 `kiro/config.py` 新增 `REQUEST_LOG_DIR`（默认空），同步 `.env.example` 和 README 配置表；验证：`tests/unit/test_config.py::test_request_log_dir_defaults_to_empty`、`test_request_log_dir_reads_env` 通过
-- [ ] 1.2 新建 `kiro/request_log.py`（`RequestRecord`、`finish()`、按月文件名、线程锁、每次 open-append-close、`OSError` 只告警一次、error 截断 200 字符）；验证：新建 `tests/unit/test_request_log.py`，覆盖未配置不建文件、自动建目录、按月分文件（月末 23:59 与次月 00:00）、文件被删后重建、只写一次（重复 finish）、无写权限不抛异常且只告警一次、20 线程并发每行可解析、记录不含 content/headers 字段，全部通过
-- [ ] 1.3 OpenAI 流式层透传 `request_record`：`stream_kiro_to_openai_internal` 在 `[Credit]` 处写 credits 与 completion_id、在 `is_refusal` 处标 refused；`collect_stream_response` 透传；验证：`tests/unit/test_streaming_openai.py` 新增 `test_request_record_credits_match_credit_log`、`test_request_record_marks_refusal`、`test_request_record_optional_param_keeps_behavior`，通过
-- [ ] 1.4 Anthropic 流式层透传 `request_record`（`streaming_anthropic.py` 549 行流式、798 行非流式两处，以及 refusal 分支）；验证：`tests/unit/test_streaming_anthropic.py` 新增同名三组测试（流式、非流式各一套），通过
-- [ ] 1.5 `routes_openai.py` 接入：入口建 record，流式 `stream_wrapper.finally`、非流式返回、FATAL 上游错误、`HTTPException`、兜底 `Exception`、全部账号失败的最终返回，账号系统与 legacy 两个分支都写；外层 `try/finally` 兜底补写并打 debug；验证：`tests/unit/test_routes_openai.py` 新增 `TestRequestLog`，覆盖流式成功、非流式成功、上游 402、网络错误 502、流式中途出错（credits 为出错前累计值）、客户端断开、兜底从不触发，通过
-- [ ] 1.6 `routes_anthropic.py` 接入，范围同 1.5；验证：`tests/unit/test_routes_anthropic.py` 新增 `TestRequestLog`，用例同 1.5，通过
-- [ ] 1.7 `validation_exception_handler` 对 `LOGGED_ENDPOINTS` 写 422 记录，`/v1/models`、`/health`、`count_tokens` 不写；验证：`tests/unit/test_exceptions.py::test_validation_error_writes_request_record`、`tests/unit/test_routes_openai.py::test_models_endpoint_not_logged`、`tests/unit/test_routes_anthropic.py::test_count_tokens_not_logged` 通过
-- [ ] 1.8 四路径一致性：同一组 mock 上游事件分别走 OpenAI/Anthropic × 流式/非流式，断言记录除 `api`/`stream`/`id`/`ts`/`duration_ms` 外完全相同；验证：`tests/integration/test_full_flow.py::test_request_log_consistent_across_four_paths` 通过
-- [ ] 1.9 全量回归与真机冒烟：`.venv/bin/pytest -q` 全绿；在 8100 端口带 `REQUEST_LOG_DIR=/tmp/kgw-reqlog` 起一个临时实例，用 haiku 各打一次 OpenAI 和 Anthropic 的流式与非流式请求，确认写出 4 行且 credits 与 `[Credit]` 日志一致，然后关掉这个实例
-- [ ] 1.10 README「配置说明」和「与上游的差异 › 自有修复」补上请求日志；验证：文档里写的配置名与代码一致（`grep REQUEST_LOG_DIR`）
+- [x] 1.1 在 `kiro/config.py` 新增 `REQUEST_LOG_DIR`（默认空），同步 `.env.example` 和 README 配置表；验证：`tests/unit/test_config.py::test_request_log_dir_defaults_to_empty`、`test_request_log_dir_reads_env` 通过
+- [x] 1.2 新建 `kiro/request_log.py`（`RequestRecord`、`finish()`、按月文件名、线程锁、每次 open-append-close、`OSError` 只告警一次、error 截断 200 字符）；验证：新建 `tests/unit/test_request_log.py`，覆盖未配置不建文件、自动建目录、按月分文件（月末 23:59 与次月 00:00）、文件被删后重建、只写一次（重复 finish）、无写权限不抛异常且只告警一次、20 线程并发每行可解析、记录不含 content/headers 字段，全部通过
+- [x] 1.3 OpenAI 流式层透传 `request_record`：`stream_kiro_to_openai_internal` 在 `[Credit]` 处写 credits 与 completion_id、在 `is_refusal` 处标 refused；`collect_stream_response` 透传；验证：`tests/unit/test_streaming_openai.py` 新增 `test_request_record_credits_match_credit_log`、`test_request_record_marks_refusal`、`test_request_record_optional_param_keeps_behavior`，通过
+- [x] 1.4 Anthropic 流式层透传 `request_record`（`streaming_anthropic.py` 549 行流式、798 行非流式两处，以及 refusal 分支）；验证：`tests/unit/test_streaming_anthropic.py` 新增同名三组测试（流式、非流式各一套），通过
+- [x] 1.5 `routes_openai.py` 接入：入口建 record，流式 `stream_wrapper.finally`、非流式返回、FATAL 上游错误、`HTTPException`、兜底 `Exception`、全部账号失败的最终返回，账号系统与 legacy 两个分支都写；外层 `try/finally` 兜底补写并打 debug；验证：`tests/unit/test_routes_openai.py` 新增 `TestRequestLog`，覆盖流式成功、非流式成功、上游 402、网络错误 502、流式中途出错（credits 为出错前累计值）、客户端断开、兜底从不触发，通过
+- [x] 1.6 `routes_anthropic.py` 接入，范围同 1.5；验证：`tests/unit/test_routes_anthropic.py` 新增 `TestRequestLog`，用例同 1.5，通过
+- [x] 1.7 `validation_exception_handler` 对 `LOGGED_ENDPOINTS` 写 422 记录，`/v1/models`、`/health`、`count_tokens` 不写；验证：`tests/unit/test_exceptions.py::test_validation_error_writes_request_record`、`tests/unit/test_routes_openai.py::test_models_endpoint_not_logged`、`tests/unit/test_routes_anthropic.py::test_count_tokens_not_logged` 通过
+- [x] 1.8 四路径一致性：同一组 mock 上游事件分别走 OpenAI/Anthropic × 流式/非流式，断言记录除 `api`/`stream`/`id`/`ts`/`duration_ms` 外完全相同；验证：`tests/integration/test_full_flow.py::test_request_log_consistent_across_four_paths` 通过
+- [x] 1.9 全量回归与真机冒烟：`.venv/bin/pytest -q` 全绿；在 8100 端口带 `REQUEST_LOG_DIR=/tmp/kgw-reqlog` 起一个临时实例，用 haiku 各打一次 OpenAI 和 Anthropic 的流式与非流式请求，确认写出 4 行且 credits 与 `[Credit]` 日志一致，然后关掉这个实例
+- [x] 1.10 README「配置说明」和「与上游的差异 › 自有修复」补上请求日志；验证：文档里写的配置名与代码一致（`grep REQUEST_LOG_DIR`）
 
 ## 2. 桌面端工程骨架
 

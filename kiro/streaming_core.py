@@ -50,6 +50,7 @@ from kiro.thinking_parser import ThinkingParser
 from kiro.model_resolver import normalize_model_name
 
 if TYPE_CHECKING:
+    from kiro.request_log import RequestRecord
     from kiro.cache import ModelInfoCache
 
 # Import debug_logger for logging
@@ -363,7 +364,8 @@ async def _process_chunk(
 async def collect_stream_to_result(
     response: httpx.Response,
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
-    enable_thinking_parser: bool = True
+    enable_thinking_parser: bool = True,
+    request_record: Optional["RequestRecord"] = None,
 ) -> StreamResult:
     """
     Collects full response from Kiro stream.
@@ -375,6 +377,9 @@ async def collect_stream_to_result(
         response: HTTP response with stream
         first_token_timeout: First token wait timeout
         enable_thinking_parser: Whether to enable thinking block parsing
+        request_record: Request log record whose credits are updated as metering
+            events arrive (optional), so a stream that fails mid-way still
+            reports what was already billed
     
     Returns:
         StreamResult with full content, thinking, tool calls, and usage
@@ -398,6 +403,8 @@ async def collect_stream_to_result(
             # calls (tool use), each emitting its own metering event.
             result.credits += event.credits
             result.upstream_calls += 1
+            if request_record is not None:
+                request_record.credits += event.credits
         elif event.type == "context_usage" and event.context_usage_percentage is not None:
             result.context_usage_percentage = event.context_usage_percentage
         elif event.type == "stop" and event.stop:

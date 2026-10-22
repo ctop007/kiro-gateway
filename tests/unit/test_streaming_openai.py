@@ -1706,3 +1706,219 @@ class TestStreamingOpenaiKeepalive:
         assert OPENAI_KEEPALIVE_COMMENT not in chunks
         assert any("tool_calls" in c for c in chunks)
         print("✓ No keepalive comments when disabled")
+
+
+# ==================================================================================================
+# Tests for request log record propagation
+# ==================================================================================================
+
+class TestStreamingOpenaiRequestRecord:
+    """Tests for filling the request log record from the OpenAI streaming layer."""
+
+    @staticmethod
+    def _events_stream(events):
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            for event in events:
+                yield event
+        return mock_parse_kiro_stream
+
+    @staticmethod
+    def _credit_line(mock_logger_info):
+        """Return the single [Credit] log line emitted during the test."""
+        lines = [c.args[0] for c in mock_logger_info.call_args_list if c.args and str(c.args[0]).startswith("[Credit]")]
+        assert len(lines) == 1
+        return lines[0]
+
+    @pytest.mark.asyncio
+    async def test_request_record_credits_match_credit_log(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Streams two metering events with a record attached.
+        Goal: record.credits and record.response_id match the [Credit] log line exactly.
+        """
+        from kiro.request_log import start_request_record
+
+        record = start_request_record(api="openai", model="claude-sonnet-4", stream=True)
+        events = [
+            KiroEvent(type="content", content="Hi"),
+            KiroEvent(type="metering", credits=0.0930),
+            KiroEvent(type="metering", credits=0.5290),
+            KiroEvent(type="context_usage", context_usage_percentage=0.5),
+        ]
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                with patch('kiro.streaming_openai.logger.info') as mock_info:
+                    async for _ in stream_kiro_to_openai(
+                        mock_http_client, mock_response, "claude-sonnet-4",
+                        mock_model_cache, mock_auth_manager, request_record=record
+                    ):
+                        pass
+
+        line = self._credit_line(mock_info)
+        assert record.credits == pytest.approx(0.6220)
+        assert f"req={record.response_id} " in line
+        assert f"credits={record.credits:.12f}" in line
+        assert record.outcome is None
+
+    @pytest.mark.asyncio
+    async def test_request_record_marks_refusal(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Streams a CONTENT_FILTERED stop with a record attached.
+        Goal: Refusals are logged as outcome "refused", not as plain success.
+        """
+        from kiro.request_log import start_request_record, OUTCOME_REFUSED
+
+        record = start_request_record(api="openai", model="claude-opus-5", stream=True)
+        events = [
+            KiroEvent(type="stop", stop=UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "No")),
+            KiroEvent(type="context_usage", context_usage_percentage=0.77),
+        ]
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                async for _ in stream_kiro_to_openai(
+                    mock_http_client, mock_response, "claude-opus-5",
+                    mock_model_cache, mock_auth_manager, request_record=record
+                ):
+                    pass
+
+        assert record.outcome == OUTCOME_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_request_record_keeps_credits_billed_before_error(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Fails the stream after one metering event.
+        Goal: Credits already billed are kept on the record when the stream breaks.
+        """
+        from kiro.request_log import start_request_record
+
+        record = start_request_record(api="openai", model="claude-sonnet-4", stream=True)
+
+        async def failing_stream(*args, **kwargs):
+            yield KiroEvent(type="content", content="partial")
+            yield KiroEvent(type="metering", credits=0.25)
+            raise RuntimeError("connection reset")
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', failing_stream):
+            with pytest.raises(RuntimeError):
+                async for _ in stream_kiro_to_openai(
+                    mock_http_client, mock_response, "claude-sonnet-4",
+                    mock_model_cache, mock_auth_manager, request_record=record
+                ):
+                    pass
+
+        assert record.credits == pytest.approx(0.25)
+        assert record.response_id is not None
+
+    @pytest.mark.asyncio
+    async def test_request_record_optional_param_keeps_behavior(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Streams the same events with and without a record.
+        Goal: Attaching a record must not change a single byte of client output (ids aside).
+        """
+        from kiro.request_log import start_request_record
+
+        events = [
+            KiroEvent(type="content", content="Hello"),
+            KiroEvent(type="metering", credits=0.1),
+            KiroEvent(type="context_usage", context_usage_percentage=0.5),
+        ]
+
+        async def run(record):
+            chunks = []
+            with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+                with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                    with patch('kiro.streaming_openai.generate_completion_id', return_value="chatcmpl-fixed"):
+                        with patch('kiro.streaming_openai.time.time', return_value=1700000000):
+                            async for chunk in stream_kiro_to_openai(
+                                mock_http_client, mock_response, "claude-sonnet-4",
+                                mock_model_cache, mock_auth_manager, request_record=record
+                            ):
+                                chunks.append(chunk)
+            return chunks
+
+        without_record = await run(None)
+        with_record = await run(start_request_record(api="openai", model="claude-sonnet-4", stream=True))
+
+        assert with_record == without_record
+
+    @pytest.mark.asyncio
+    async def test_request_record_non_streaming_collect(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Runs collect_stream_response with a record attached.
+        Goal: The OpenAI non-streaming path fills the record the same way as streaming.
+        """
+        from kiro.request_log import start_request_record
+
+        record = start_request_record(api="openai", model="claude-sonnet-4", stream=False)
+        events = [
+            KiroEvent(type="content", content="Hello"),
+            KiroEvent(type="metering", credits=0.3),
+            KiroEvent(type="context_usage", context_usage_percentage=0.5),
+        ]
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                with patch('kiro.streaming_openai.logger.info') as mock_info:
+                    await collect_stream_response(
+                        mock_http_client, mock_response, "claude-sonnet-4",
+                        mock_model_cache, mock_auth_manager, request_record=record
+                    )
+
+        line = self._credit_line(mock_info)
+        assert record.credits == pytest.approx(0.3)
+        assert f"req={record.response_id} " in line
+
+    @pytest.mark.asyncio
+    async def test_request_record_non_streaming_refusal(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Runs collect_stream_response on a refused stream with a record.
+        Goal: Non-streaming refusals are marked the same as streaming ones.
+        """
+        from kiro.request_log import start_request_record, OUTCOME_REFUSED
+
+        record = start_request_record(api="openai", model="claude-opus-5", stream=False)
+        events = [
+            KiroEvent(type="stop", stop=UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "No")),
+            KiroEvent(type="context_usage", context_usage_percentage=0.77),
+        ]
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                await collect_stream_response(
+                    mock_http_client, mock_response, "claude-opus-5",
+                    mock_model_cache, mock_auth_manager, request_record=record
+                )
+
+        assert record.outcome == OUTCOME_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_request_record_through_first_token_retry(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Streams through stream_with_first_token_retry with a record.
+        Goal: The route-level entry point forwards the record to the internal stream.
+        """
+        from kiro.request_log import start_request_record
+
+        record = start_request_record(api="openai", model="claude-sonnet-4", stream=True)
+        events = [
+            KiroEvent(type="content", content="Hi"),
+            KiroEvent(type="metering", credits=0.07),
+            KiroEvent(type="context_usage", context_usage_percentage=0.5),
+        ]
+
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._events_stream(events)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                async for _ in stream_with_first_token_retry(
+                    make_request=AsyncMock(return_value=mock_response),
+                    client=mock_http_client,
+                    model="claude-sonnet-4",
+                    model_cache=mock_model_cache,
+                    auth_manager=mock_auth_manager,
+                    initial_response=mock_response,
+                    keepalive_interval=0,
+                    request_record=record,
+                ):
+                    pass
+
+        assert record.credits == pytest.approx(0.07)

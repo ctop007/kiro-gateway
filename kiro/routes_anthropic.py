@@ -50,6 +50,12 @@ from kiro.streaming_anthropic import (
     collect_anthropic_response,
     stream_with_first_token_retry_anthropic,
 )
+from kiro.request_log import (
+    RequestRecord,
+    finish_streaming_request_record,
+    start_request_record,
+    track_request,
+)
 from kiro.http_client import KiroHttpClient
 from kiro.kiro_errors import build_anthropic_error_body
 from kiro.utils import generate_conversation_id
@@ -147,7 +153,38 @@ async def messages(
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/messages (model={request_data.model}, stream={request_data.stream})")
-    
+    record = start_request_record(
+        api="anthropic", model=request_data.model, stream=bool(request_data.stream)
+    )
+    return await track_request(
+        record, lambda: _messages_impl(request, request_data, anthropic_version, record)
+    )
+
+
+async def _messages_impl(
+    request: Request,
+    request_data: AnthropicMessagesRequest,
+    anthropic_version: Optional[str],
+    record: RequestRecord,
+):
+    """
+    Body of the Anthropic Messages endpoint.
+
+    Split out so messages() can wrap every exit in track_request().
+
+    Args:
+        request: FastAPI Request for accessing app.state
+        request_data: Request in Anthropic MessagesRequest format
+        anthropic_version: Anthropic API version header (optional)
+        record: Request log record for this request
+
+    Returns:
+        StreamingResponse for streaming mode (SSE)
+        JSONResponse for non-streaming mode
+
+    Raises:
+        HTTPException: On validation or API errors
+    """
     if anthropic_version:
         logger.debug(f"Anthropic-Version header: {anthropic_version}")
     
@@ -458,6 +495,7 @@ async def messages(
                                     request_messages=messages_for_tokenizer,
                                     request_tools=tools_for_tokenizer,
                                     request_system=system_for_tokenizer,
+                                    request_record=record,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -486,7 +524,9 @@ async def messages(
                                         debug_logger.flush_on_error(500, str(streaming_error))
                                     else:
                                         debug_logger.discard_buffers()
+                                finish_streaming_request_record(record, streaming_error, client_disconnected)
                         
+                        record.stream_owned = True
                         return StreamingResponse(
                             stream_wrapper(),
                             media_type="text/event-stream",
@@ -506,6 +546,7 @@ async def messages(
                             request_messages=messages_for_tokenizer,
                             request_tools=tools_for_tokenizer,
                             request_system=system_for_tokenizer,
+                            request_record=record,
                         )
                         
                         await http_client.close()
@@ -806,6 +847,7 @@ async def messages(
                         request_messages=messages_for_tokenizer,
                         request_tools=tools_for_tokenizer,
                         request_system=system_for_tokenizer,
+                        request_record=record,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -835,7 +877,9 @@ async def messages(
                             debug_logger.flush_on_error(500, str(streaming_error))
                         else:
                             debug_logger.discard_buffers()
+                    finish_streaming_request_record(record, streaming_error, client_disconnected)
             
+            record.stream_owned = True
             return StreamingResponse(
                 stream_wrapper(),
                 media_type="text/event-stream",
@@ -855,6 +899,7 @@ async def messages(
                 request_messages=messages_for_tokenizer,
                 request_tools=tools_for_tokenizer,
                 request_system=system_for_tokenizer,
+                request_record=record,
             )
             
             await http_client.close()
