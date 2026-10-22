@@ -529,7 +529,7 @@ def sanitize_json_schema(
     Sanitizes JSON Schema from fields that Kiro API doesn't accept.
     
     Kiro API returns 400 "Improperly formed request" error if:
-    - required is an empty array []
+    - required is not a non-empty array
     - additionalProperties is present in schema
     - oneOf, allOf, or anyOf appears at the top level of input_schema
     
@@ -554,9 +554,11 @@ def sanitize_json_schema(
     result = {}
     
     for key, value in schema.items():
-        # Skip empty required arrays
-        if key == "required" and isinstance(value, list) and len(value) == 0:
-            continue
+        # Skip invalid or empty required values. Bedrock requires an array
+        # when this field is present, and Kiro rejects empty arrays.
+        if key == "required":
+            if not isinstance(value, list) or len(value) == 0:
+                continue
         
         # Skip additionalProperties - Kiro API doesn't support it
         if key == "additionalProperties":
