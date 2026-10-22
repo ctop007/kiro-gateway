@@ -12,6 +12,8 @@ Tests for Anthropic Messages API to Kiro format conversion:
 - Full Anthropic → Kiro payload conversion
 """
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -2198,3 +2200,92 @@ class TestInlineSystemMessagesEndToEnd:
         assert "userInputMessage" in history[0]
         assert "assistantResponseMessage" in history[1]
         assert "Second question" in content
+
+
+# ==================================================================================================
+# Tests for empty content placeholder echo (Claude Code tool loops)
+# ==================================================================================================
+
+class TestAnthropicToKiroNoPlaceholderEcho:
+    """
+    Claude Code sends tool-only assistant turns and tool-result-only user turns.
+    None of them may carry the placeholder, otherwise the model learns to write it.
+    """
+
+    TOOLS = [AnthropicTool(
+        name="read_file",
+        description="Read a file",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+    )]
+
+    def _convert(self, messages):
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5", max_tokens=1024, tools=self.TOOLS, messages=messages
+        )
+        with patch("kiro.converters_anthropic.get_model_id_for_kiro", return_value="claude-sonnet-4.5"):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                return anthropic_to_kiro(request, "conv-123", "arn:aws:test")
+
+    @staticmethod
+    def _tool_turns(i, echo=False):
+        assistant_blocks = [{"type": "tool_use", "id": f"toolu_{i}", "name": "read_file", "input": {"path": f"f{i}.py"}}]
+        if echo:
+            assistant_blocks.insert(0, {"type": "text", "text": "(empty placeholder)"})
+        return [
+            {"role": "assistant", "content": assistant_blocks},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"toolu_{i}", "content": f"content {i}"}]},
+        ]
+
+    def test_tool_loop_payload_has_no_placeholder(self):
+        """
+        What it does: Converts a multi-step tool loop ending in a tool result.
+        Purpose: Neither history nor the current message may contain the placeholder.
+        """
+        messages = [{"role": "user", "content": "Refactor the project"}]
+        for i in range(3):
+            messages += self._tool_turns(i)
+
+        result = self._convert(messages)
+
+        assert "(empty placeholder)" not in json.dumps(result)
+        current = result["conversationState"]["currentMessage"]["userInputMessage"]
+        assert current["content"] == ""
+        assert current["userInputMessageContext"]["toolResults"][0]["toolUseId"] == "toolu_2"
+
+    def test_previously_echoed_placeholders_are_cleaned(self):
+        """
+        What it does: History where the model already wrote "(empty placeholder)" before tool calls.
+        Purpose: Existing polluted Claude Code sessions stop reinforcing the echo.
+        """
+        messages = [{"role": "user", "content": "Refactor the project"}]
+        for i in range(3):
+            messages += self._tool_turns(i, echo=True)
+
+        result = self._convert(messages)
+
+        assert "(empty placeholder)" not in json.dumps(result)
+        tool_turns = [h["assistantResponseMessage"] for h in result["conversationState"]["history"]
+                      if "assistantResponseMessage" in h]
+        assert all(t["content"] == "" and t["toolUses"] for t in tool_turns)
+
+    def test_real_assistant_text_is_preserved(self):
+        """
+        What it does: Assistant turn with real text plus a tool call.
+        Purpose: Only the placeholder echo is removed.
+        """
+        messages = [
+            {"role": "user", "content": "Read f0.py"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "(empty placeholder)"},
+                {"type": "text", "text": "Reading the file now."},
+                {"type": "tool_use", "id": "toolu_0", "name": "read_file", "input": {"path": "f0.py"}},
+            ]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_0", "content": "x"}]},
+        ]
+
+        result = self._convert(messages)
+
+        assistant = next(h["assistantResponseMessage"] for h in result["conversationState"]["history"]
+                         if "assistantResponseMessage" in h)
+        assert assistant["content"] == "Reading the file now."
+

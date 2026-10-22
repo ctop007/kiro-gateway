@@ -12,6 +12,8 @@ Tests for shared conversion logic used by both OpenAI and Anthropic adapters:
 """
 
 import os
+import json
+
 import pytest
 from unittest.mock import patch
 
@@ -39,6 +41,11 @@ from kiro.converters_core import (
     UnifiedMessage,
     UnifiedTool,
     ThinkingConfig,
+    EMPTY_CONTENT_PLACEHOLDER,
+    resolve_empty_content,
+    strip_echoed_placeholders,
+    extract_assistant_text,
+    drop_placeholder_text_blocks,
 )
 
 # Test data for images - 1x1 pixel JPEG
@@ -6951,3 +6958,395 @@ class TestBuildKiroPayloadWithThinkingConfig:
         print(f"Checking for <max_thinking_length>7000</max_thinking_length> in content...")
         assert "<max_thinking_length>7000</max_thinking_length>" in content
         assert "<thinking_mode>enabled</thinking_mode>" in content
+
+
+# ==================================================================================================
+# Tests for empty content handling (placeholder echo fix)
+# ==================================================================================================
+
+TOOL_CALL = {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}}
+TOOL_RESULT = {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"}
+
+
+class TestResolveEmptyContent:
+    """Tests for resolve_empty_content()."""
+
+    def test_non_empty_content_is_returned_unchanged(self):
+        """
+        What it does: Non-empty text passes through regardless of payload.
+        Purpose: Real content is never replaced.
+        """
+        assert resolve_empty_content("Hello", has_structured_payload=False) == "Hello"
+        assert resolve_empty_content("Hello", has_structured_payload=True) == "Hello"
+
+    def test_whitespace_content_is_kept(self):
+        """
+        What it does: Whitespace-only text is treated as content.
+        Purpose: Only truly empty strings are substituted.
+        """
+        assert resolve_empty_content(" ", has_structured_payload=False) == " "
+
+    def test_tool_only_message_gets_empty_text(self):
+        """
+        What it does: Empty text with tool calls/results stays empty.
+        Purpose: No placeholder the model could learn to imitate.
+        """
+        assert resolve_empty_content("", has_structured_payload=True) == ""
+
+    def test_fully_empty_message_gets_placeholder(self):
+        """
+        What it does: Empty text without any payload gets the placeholder.
+        Purpose: Messages carrying nothing still have minimal content.
+        """
+        assert resolve_empty_content("", has_structured_payload=False) == EMPTY_CONTENT_PLACEHOLDER
+
+
+class TestStripEchoedPlaceholders:
+    """Tests for strip_echoed_placeholders()."""
+
+    def test_placeholder_only_text_becomes_empty(self):
+        """
+        What it does: Removes an assistant turn that only echoed the placeholder.
+        Purpose: Stops the echo from reinforcing itself through history.
+        """
+        assert strip_echoed_placeholders("(empty placeholder)") == ""
+
+    def test_surrounding_whitespace_is_tolerated(self):
+        """
+        What it does: Removes the echo even with surrounding whitespace/newlines.
+        Purpose: Models often emit leading/trailing newlines.
+        """
+        assert strip_echoed_placeholders("\n  (empty placeholder)  \n") == ""
+
+    def test_echo_line_is_removed_but_other_text_kept(self):
+        """
+        What it does: Removes only the placeholder line from multi-line text.
+        Purpose: Real assistant text is preserved.
+        """
+        assert strip_echoed_placeholders("(empty placeholder)\n\nDone, file saved.") == "Done, file saved."
+
+    def test_multiple_echo_lines_are_removed(self):
+        """
+        What it does: Removes several echoed lines in one message.
+        Purpose: Merged assistant turns can contain repeated echoes.
+        """
+        text = "(empty placeholder)\nStep 1\n(empty placeholder)\nStep 2"
+        assert strip_echoed_placeholders(text) == "Step 1\nStep 2"
+
+    @pytest.mark.parametrize("text", [
+        "Use (empty placeholder) as a value",
+        "(empty placeholder) is what the gateway used to send",
+        "`(empty placeholder)`",
+        "(Empty Placeholder)",
+    ])
+    def test_inline_mentions_are_untouched(self, text):
+        """
+        What it does: Leaves text that merely mentions the placeholder.
+        Purpose: Only exact placeholder-only lines are treated as echoes.
+        """
+        assert strip_echoed_placeholders(text) == text
+
+    def test_text_without_placeholder_is_returned_as_is(self):
+        """
+        What it does: Fast path for normal text, including its whitespace.
+        Purpose: Normal assistant content is never reformatted.
+        """
+        text = "  Hello\n\n  world  "
+        assert strip_echoed_placeholders(text) is text
+
+    def test_empty_string(self):
+        """
+        What it does: Handles an empty string.
+        Purpose: Edge case for tool-only messages.
+        """
+        assert strip_echoed_placeholders("") == ""
+
+
+class TestDropPlaceholderTextBlocks:
+    """Tests for drop_placeholder_text_blocks()."""
+
+    def test_removes_only_placeholder_blocks(self):
+        """
+        What it does: Mixed list of echo, text and tool_use blocks.
+        Purpose: Only placeholder-only text blocks are removed, order is preserved.
+        """
+        text = {"type": "text", "text": "Hi"}
+        tool = {"type": "tool_use", "id": "t", "name": "f", "input": {}}
+        content = [{"type": "text", "text": "(empty placeholder)"}, text, tool]
+        assert drop_placeholder_text_blocks(content) == [text, tool]
+
+    @pytest.mark.parametrize("content", [None, "", "(empty placeholder)", "text"])
+    def test_non_list_content_is_returned_unchanged(self, content):
+        """
+        What it does: Non-list content.
+        Purpose: Strings are handled by line-based cleanup, not here.
+        """
+        assert drop_placeholder_text_blocks(content) == content
+
+    def test_does_not_mutate_input(self):
+        """
+        What it does: Checks the original list is untouched.
+        Purpose: Client request objects must not be modified in place.
+        """
+        content = [{"type": "text", "text": "(empty placeholder)"}]
+        drop_placeholder_text_blocks(content)
+        assert len(content) == 1
+
+    def test_block_without_text_is_kept(self):
+        """
+        What it does: Blocks lacking a text field (e.g. image).
+        Purpose: Never treated as echoes.
+        """
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}}
+        assert drop_placeholder_text_blocks([image]) == [image]
+
+
+class TestExtractAssistantText:
+    """Tests for extract_assistant_text()."""
+
+    def test_placeholder_block_is_not_glued_to_next_text(self):
+        """
+        What it does: Echo block followed by a real text block.
+        Purpose: Blocks are joined without separator, so the echo must be dropped per block.
+        """
+        content = [{"type": "text", "text": "(empty placeholder)"}, {"type": "text", "text": "Reading now."}]
+        assert extract_assistant_text(content) == "Reading now."
+
+    def test_placeholder_block_with_whitespace(self):
+        """
+        What it does: Echo block with surrounding newlines.
+        Purpose: Whitespace variants of the echo are recognized.
+        """
+        assert extract_assistant_text([{"type": "text", "text": "\n(empty placeholder)\n"}]) == ""
+
+    def test_pydantic_like_blocks(self):
+        """
+        What it does: Blocks given as objects with a .text attribute.
+        Purpose: Anthropic Pydantic content blocks are handled.
+        """
+        class Block:
+            def __init__(self, text):
+                self.text = text
+        assert extract_assistant_text([Block("(empty placeholder)"), Block("Done")]) == "Done"
+
+    def test_non_text_blocks_are_ignored(self):
+        """
+        What it does: tool_use blocks next to an echo block.
+        Purpose: Non-text blocks never count as echoes and add no text.
+        """
+        content = [{"type": "text", "text": "(empty placeholder)"},
+                   {"type": "tool_use", "id": "t", "name": "f", "input": {}}]
+        assert extract_assistant_text(content) == ""
+
+    def test_block_mentioning_placeholder_is_kept(self):
+        """
+        What it does: A text block that only mentions the placeholder.
+        Purpose: Real content is never dropped.
+        """
+        content = [{"type": "text", "text": "The gateway used (empty placeholder) before."}]
+        assert extract_assistant_text(content) == "The gateway used (empty placeholder) before."
+
+    @pytest.mark.parametrize("content,expected", [
+        (None, ""),
+        ("", ""),
+        ("Plain answer", "Plain answer"),
+        ("(empty placeholder)\nPlain answer", "Plain answer"),
+    ])
+    def test_string_and_none_content(self, content, expected):
+        """
+        What it does: Plain string and None content.
+        Purpose: Same behavior as strip_echoed_placeholders for non-list content.
+        """
+        assert extract_assistant_text(content) == expected
+
+
+class TestBuildKiroHistoryEmptyContent:
+    """Tests that build_kiro_history() does not put placeholders into tool-only turns."""
+
+    def test_tool_only_assistant_turn_has_empty_text(self):
+        """
+        What it does: Assistant turn with only tool calls.
+        Purpose: The main source of the echo - must be sent with empty text.
+        """
+        messages = [UnifiedMessage(role="assistant", content="", tool_calls=[TOOL_CALL])]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        response = result[0]["assistantResponseMessage"]
+        assert response["content"] == ""
+        assert response["toolUses"][0]["name"] == "get_weather"
+
+    def test_tool_only_assistant_turn_with_none_content(self):
+        """
+        What it does: Assistant turn with content=None and tool calls (OpenAI style).
+        Purpose: None is handled like empty text.
+        """
+        messages = [UnifiedMessage(role="assistant", content=None, tool_calls=[TOOL_CALL])]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["assistantResponseMessage"]["content"] == ""
+
+    def test_echoed_placeholder_in_tool_turn_is_removed(self):
+        """
+        What it does: Assistant turn where the model already echoed the placeholder.
+        Purpose: Existing polluted sessions heal instead of reinforcing the echo.
+        """
+        messages = [UnifiedMessage(role="assistant", content="(empty placeholder)", tool_calls=[TOOL_CALL])]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["assistantResponseMessage"]["content"] == ""
+
+    def test_echoed_placeholder_without_tools_falls_back_to_placeholder(self):
+        """
+        What it does: Echo-only assistant turn without tool calls.
+        Purpose: Becomes a fully empty message, which keeps minimal content.
+        """
+        messages = [UnifiedMessage(role="assistant", content="(empty placeholder)")]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["assistantResponseMessage"]["content"] == EMPTY_CONTENT_PLACEHOLDER
+
+    def test_fully_empty_assistant_turn_keeps_placeholder(self):
+        """
+        What it does: Assistant turn with neither text nor tool calls.
+        Purpose: Conservative fallback is preserved.
+        """
+        messages = [UnifiedMessage(role="assistant", content="")]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["assistantResponseMessage"]["content"] == EMPTY_CONTENT_PLACEHOLDER
+
+    def test_assistant_text_with_tool_calls_is_unchanged(self):
+        """
+        What it does: Assistant turn with real text and tool calls.
+        Purpose: Real text is never altered.
+        """
+        messages = [UnifiedMessage(role="assistant", content="Let me check.", tool_calls=[TOOL_CALL])]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["assistantResponseMessage"]["content"] == "Let me check."
+
+    def test_tool_result_only_user_turn_has_empty_text(self):
+        """
+        What it does: User turn with only tool results.
+        Purpose: No placeholder on the user side of tool loops either.
+        """
+        messages = [UnifiedMessage(role="user", content="", tool_results=[TOOL_RESULT])]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        user_input = result[0]["userInputMessage"]
+        assert user_input["content"] == ""
+        assert user_input["userInputMessageContext"]["toolResults"][0]["toolUseId"] == "call_1"
+
+    def test_fully_empty_user_turn_keeps_placeholder(self):
+        """
+        What it does: User turn with neither text nor tool results.
+        Purpose: Conservative fallback is preserved.
+        """
+        messages = [UnifiedMessage(role="user", content="")]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["userInputMessage"]["content"] == EMPTY_CONTENT_PLACEHOLDER
+
+    def test_user_text_is_never_stripped(self):
+        """
+        What it does: A user message that literally says "(empty placeholder)".
+        Purpose: Echo cleanup applies only to assistant turns, never user content.
+        """
+        messages = [UnifiedMessage(role="user", content="(empty placeholder)")]
+
+        result = build_kiro_history(messages, "claude-sonnet-4")
+
+        assert result[0]["userInputMessage"]["content"] == "(empty placeholder)"
+
+
+class TestBuildKiroPayloadEmptyContent:
+    """Tests that build_kiro_payload() handles the current message without placeholders."""
+
+    # Tools are always present in real tool loops; without them tool content is
+    # converted to plain text instead (see TestStripAllToolContent)
+    TOOLS = [UnifiedTool(
+        name="get_weather",
+        description="Get weather",
+        input_schema={"type": "object", "properties": {"city": {"type": "string"}}},
+    )]
+
+    @staticmethod
+    def _build(messages):
+        with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+            return build_kiro_payload(
+                messages=messages,
+                system_prompt="",
+                model_id="claude-sonnet-4",
+                tools=TestBuildKiroPayloadEmptyContent.TOOLS,
+                conversation_id="conv-1",
+                profile_arn="arn:aws:test",
+                thinking_config=ThinkingConfig(enabled=False),
+            ).payload
+
+    def test_current_tool_result_turn_has_empty_text(self):
+        """
+        What it does: Current message is a tool-result-only user turn.
+        Purpose: This is the most frequent Claude Code request shape.
+        """
+        payload = self._build([
+            UnifiedMessage(role="user", content="Weather in Paris?"),
+            UnifiedMessage(role="assistant", content="", tool_calls=[TOOL_CALL]),
+            UnifiedMessage(role="user", content="", tool_results=[TOOL_RESULT]),
+        ])
+
+        current = payload["conversationState"]["currentMessage"]["userInputMessage"]
+        assert current["content"] == ""
+        assert current["userInputMessageContext"]["toolResults"]
+
+    def test_current_fully_empty_turn_keeps_placeholder(self):
+        """
+        What it does: Current message has no text and no tool results.
+        Purpose: Conservative fallback is preserved.
+        """
+        payload = self._build([
+            UnifiedMessage(role="user", content="Hi"),
+            UnifiedMessage(role="assistant", content="Hello"),
+            UnifiedMessage(role="user", content=""),
+        ])
+
+        current = payload["conversationState"]["currentMessage"]["userInputMessage"]
+        assert current["content"] == EMPTY_CONTENT_PLACEHOLDER
+
+    def test_trailing_assistant_prefill_is_cleaned(self):
+        """
+        What it does: Conversation ends with an assistant message that echoed the placeholder.
+        Purpose: The echo is removed from history; the synthetic user turn keeps the placeholder.
+        """
+        payload = self._build([
+            UnifiedMessage(role="user", content="Hi"),
+            UnifiedMessage(role="assistant", content="(empty placeholder)\nPartial answer"),
+        ])
+
+        history = payload["conversationState"]["history"]
+        assert history[-1]["assistantResponseMessage"]["content"] == "Partial answer"
+        current = payload["conversationState"]["currentMessage"]["userInputMessage"]
+        assert current["content"] == EMPTY_CONTENT_PLACEHOLDER
+
+    def test_long_tool_loop_contains_no_placeholder(self):
+        """
+        What it does: Several tool-only turns, like a long Claude Code session.
+        Purpose: The placeholder must not appear anywhere for the model to imitate.
+        """
+        messages = [UnifiedMessage(role="user", content="Do the task")]
+        for i in range(5):
+            call = {**TOOL_CALL, "id": f"call_{i}"}
+            messages.append(UnifiedMessage(role="assistant", content="", tool_calls=[call]))
+            messages.append(UnifiedMessage(role="user", content="", tool_results=[{**TOOL_RESULT, "tool_use_id": f"call_{i}"}]))
+
+        payload = self._build(messages)
+
+        assert "(empty placeholder)" not in json.dumps(payload)
+

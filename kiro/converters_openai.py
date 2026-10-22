@@ -40,6 +40,7 @@ from kiro.models_openai import ChatMessage, ChatCompletionRequest, Tool
 # Import from core - reuse shared logic
 from kiro.converters_core import (
     extract_text_content,
+    extract_assistant_text,
     extract_images_from_content,
     UnifiedMessage,
     UnifiedTool,
@@ -222,7 +223,11 @@ def convert_openai_messages_to_unified(messages: List[ChatMessage]) -> Tuple[str
 
             unified_msg = UnifiedMessage(
                 role=msg.role,
-                content=extract_text_content(msg.content),
+                content=(
+                    extract_assistant_text(msg.content)
+                    if msg.role == "assistant"
+                    else extract_text_content(msg.content)
+                ),
                 tool_calls=tool_calls,
                 tool_results=tool_results,
                 images=images

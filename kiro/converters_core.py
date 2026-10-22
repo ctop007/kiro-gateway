@@ -132,6 +132,143 @@ class KiroPayloadResult:
 
 
 # ==================================================================================================
+# Empty Content Handling
+# ==================================================================================================
+
+# Text used for messages that carry nothing at all (no text, tool calls or tool results),
+# such as synthetic messages inserted to keep roles alternating.
+EMPTY_CONTENT_PLACEHOLDER = "(empty placeholder)"
+
+
+def resolve_empty_content(content: str, has_structured_payload: bool) -> str:
+    """
+    Choose the text to send for a message whose text may be empty.
+
+    Messages that only carry tool calls or tool results are sent with empty text.
+    Putting a placeholder there teaches the model to imitate it: after a few
+    tool-only turns it starts writing "(empty placeholder)" itself before every
+    tool call. Kiro accepts empty text for these messages (verified live), so the
+    placeholder is reserved for messages that carry nothing at all.
+
+    Args:
+        content: Text content of the message (may be empty)
+        has_structured_payload: Whether the message carries tool calls or tool results
+
+    Returns:
+        The original content if non-empty, "" for tool-only messages,
+        otherwise EMPTY_CONTENT_PLACEHOLDER
+
+    Examples:
+        >>> resolve_empty_content("Hi", False)
+        'Hi'
+        >>> resolve_empty_content("", True)
+        ''
+        >>> resolve_empty_content("", False)
+        '(empty placeholder)'
+    """
+    if content:
+        return content
+    if has_structured_payload:
+        return ""
+    return EMPTY_CONTENT_PLACEHOLDER
+
+
+def strip_echoed_placeholders(content: str) -> str:
+    """
+    Remove lines where the model echoed the gateway's empty-content placeholder.
+
+    Older gateway versions put EMPTY_CONTENT_PLACEHOLDER into tool-only assistant
+    turns, and models learned to write it themselves. Those echoes stay in client
+    histories and keep reinforcing the pattern, so assistant history text is
+    cleaned before it is sent upstream. Only lines consisting solely of the
+    placeholder are removed; any other text is left untouched.
+
+    Args:
+        content: Assistant message text
+
+    Returns:
+        Text without placeholder-only lines (may become empty)
+
+    Examples:
+        >>> strip_echoed_placeholders("(empty placeholder)")
+        ''
+        >>> strip_echoed_placeholders("(empty placeholder)\n\nDone.")
+        'Done.'
+        >>> strip_echoed_placeholders("Use (empty placeholder) as a value")
+        'Use (empty placeholder) as a value'
+    """
+    if EMPTY_CONTENT_PLACEHOLDER not in content:
+        return content
+
+    lines = content.split("\n")
+    kept = [line for line in lines if line.strip() != EMPTY_CONTENT_PLACEHOLDER]
+    if len(kept) == len(lines):
+        return content
+
+    logger.debug(f"Removed {len(lines) - len(kept)} echoed placeholder line(s) from assistant history")
+    return "\n".join(kept).strip()
+
+
+def _is_placeholder_text_block(item: Any) -> bool:
+    """
+    Check whether a content block is a text block consisting solely of the placeholder.
+
+    Args:
+        item: Content block (dict, Pydantic model or string)
+
+    Returns:
+        True if the block's text is exactly EMPTY_CONTENT_PLACEHOLDER (ignoring whitespace)
+    """
+    if isinstance(item, str):
+        text = item
+    elif isinstance(item, dict):
+        text = item.get("text")
+    else:
+        text = getattr(item, "text", None)
+    return isinstance(text, str) and text.strip() == EMPTY_CONTENT_PLACEHOLDER
+
+
+def drop_placeholder_text_blocks(content: Any) -> Any:
+    """
+    Remove text blocks that consist solely of an echoed placeholder.
+
+    Use this on assistant content before it is flattened to text: flattening joins
+    blocks without separators, which would glue the echo to the following text.
+
+    Args:
+        content: Assistant message content (list of blocks, string or None)
+
+    Returns:
+        The same content with placeholder-only text blocks removed (non-lists unchanged)
+    """
+    if not isinstance(content, list):
+        return content
+    return [item for item in content if not _is_placeholder_text_block(item)]
+
+
+def extract_assistant_text(content: Any) -> str:
+    """
+    Extract assistant text with echoed placeholders removed.
+
+    Text blocks are concatenated without separators by extract_text_content(), so an
+    echoed placeholder block would be glued to the following text. Placeholder-only
+    blocks are therefore dropped before joining, and placeholder-only lines inside
+    plain string content are removed afterwards.
+
+    Args:
+        content: Assistant message content (string, list of blocks or None)
+
+    Returns:
+        Assistant text without placeholder echoes (may be empty)
+
+    Examples:
+        >>> extract_assistant_text([{"type": "text", "text": "(empty placeholder)"}, {"type": "text", "text": "Hi"}])
+        'Hi'
+    """
+    return strip_echoed_placeholders(extract_text_content(drop_placeholder_text_blocks(content)))
+
+
+# ==================================================================================================
 # Text Content Extraction
 # ==================================================================================================
 
@@ -1064,7 +1201,7 @@ def strip_all_tool_content(messages: List[UnifiedMessage]) -> Tuple[List[Unified
                     content_parts.append(result_text)
             
             # Join all parts with double newline
-            content = "\n\n".join(content_parts) if content_parts else "(empty placeholder)"
+            content = "\n\n".join(content_parts) if content_parts else EMPTY_CONTENT_PLACEHOLDER
             
             # Create a copy of the message without tool content but with text representation
             # IMPORTANT: Preserve images from the original message (e.g., screenshots from MCP tools)
@@ -1302,7 +1439,7 @@ def ensure_first_message_is_user(messages: List[UnifiedMessage]) -> List[Unified
         # Using "(empty placeholder)" as minimal valid content to avoid disrupting conversation context
         synthetic_user = UnifiedMessage(
             role="user",
-            content="(empty placeholder)"
+            content=EMPTY_CONTENT_PLACEHOLDER
         )
         
         return [synthetic_user] + messages
@@ -1409,7 +1546,7 @@ def ensure_alternating_roles(messages: List[UnifiedMessage]) -> List[UnifiedMess
         if msg.role == "user" and prev_role == "user":
             synthetic_assistant = UnifiedMessage(
                 role="assistant",
-                content="(empty placeholder)"  # Consistent with build_kiro_history() placeholder
+                content=EMPTY_CONTENT_PLACEHOLDER
             )
             result.append(synthetic_assistant)
             synthetic_count += 1
@@ -1449,10 +1586,6 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
         if msg.role == "user":
             content = extract_text_content(msg.content)
             
-            # Fallback for empty content - Kiro API requires non-empty content
-            if not content:
-                content = "(empty placeholder)"
-            
             user_input = {
                 "content": content,
                 "modelId": model_id,
@@ -1486,19 +1619,19 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
             if user_input_context:
                 user_input["userInputMessageContext"] = user_input_context
             
+            user_input["content"] = resolve_empty_content(
+                content, has_structured_payload=bool(user_input_context.get("toolResults"))
+            )
+            
             history.append({"userInputMessage": user_input})
             
         elif msg.role == "assistant":
-            content = extract_text_content(msg.content)
-            
-            # Fallback for empty content - Kiro API requires non-empty content
-            if not content:
-                content = "(empty placeholder)"
-            
-            assistant_response = {"content": content}
-            
-            # Process tool_calls
+            content = extract_assistant_text(msg.content)
             tool_uses = extract_tool_uses_from_message(msg.content, msg.tool_calls)
+            
+            assistant_response = {
+                "content": resolve_empty_content(content, has_structured_payload=bool(tool_uses))
+            }
             if tool_uses:
                 assistant_response["toolUses"] = tool_uses
             
@@ -1616,14 +1749,12 @@ def build_kiro_payload(
     if current_message.role == "assistant":
         history.append({
             "assistantResponseMessage": {
-                "content": current_content
+                "content": resolve_empty_content(
+                    strip_echoed_placeholders(current_content), has_structured_payload=False
+                )
             }
         })
-        current_content = "(empty placeholder)"
-    
-    # If content is empty - use placeholder
-    if not current_content:
-        current_content = "(empty placeholder)"
+        current_content = EMPTY_CONTENT_PLACEHOLDER
     
     # Process images in current message - extract from message or content
     # IMPORTANT: images go directly into userInputMessage, NOT into userInputMessageContext
@@ -1654,6 +1785,12 @@ def build_kiro_payload(
         tool_results = extract_tool_results_from_content(current_message.content)
         if tool_results:
             user_input_context["toolResults"] = tool_results
+    
+    # Empty text is fine when the message carries tool results (the usual Claude Code
+    # tool turn); a placeholder there would be imitated by the model
+    current_content = resolve_empty_content(
+        current_content, has_structured_payload=bool(user_input_context.get("toolResults"))
+    )
     
     # Inject thinking tags if enabled (only for the current/last user message)
     if current_message.role == "user":

@@ -42,6 +42,8 @@ from kiro.converters_core import (
     build_kiro_payload,
     extract_text_content,
     extract_images_from_content,
+    drop_placeholder_text_blocks,
+    strip_echoed_placeholders,
 )
 
 
@@ -326,8 +328,15 @@ def convert_anthropic_messages(
         role = msg.role
         content = msg.content
 
-        # Extract text content
-        text_content = convert_anthropic_content_to_text(content)
+        # Extract text content. For assistant turns, drop echoed empty-content
+        # placeholders first: blocks are joined without separators, so a later
+        # line-based cleanup could not separate the echo from real text.
+        if role == "assistant":
+            text_content = strip_echoed_placeholders(
+                convert_anthropic_content_to_text(drop_placeholder_text_blocks(content))
+            )
+        else:
+            text_content = convert_anthropic_content_to_text(content)
 
         # Extract tool-related data and images based on role
         tool_calls = None

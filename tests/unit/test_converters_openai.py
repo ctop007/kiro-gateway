@@ -9,6 +9,8 @@ Tests for OpenAI-specific conversion logic:
 - Building Kiro payload from OpenAI requests
 """
 
+import json
+
 import pytest
 from unittest.mock import patch
 
@@ -2065,3 +2067,87 @@ class TestBuildKiroPayloadIntegration:
         print(f"Checking for <max_thinking_length>{expected_budget}</max_thinking_length>...")
         assert f"<max_thinking_length>{expected_budget}</max_thinking_length>" in content
         assert "<thinking_mode>enabled</thinking_mode>" in content
+
+
+# ==================================================================================================
+# Tests for empty content placeholder echo (tool loops)
+# ==================================================================================================
+
+class TestBuildKiroPayloadNoPlaceholderEcho:
+    """
+    OpenAI-style tool loops: assistant messages with content=None and tool_calls,
+    followed by role="tool" results. None of them may carry the placeholder.
+    """
+
+    TOOLS = [Tool(type="function", function=ToolFunction(
+        name="read_file",
+        description="Read a file",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+    ))]
+
+    @staticmethod
+    def _tool_turns(i, echo=False):
+        return [
+            ChatMessage(
+                role="assistant",
+                content="(empty placeholder)" if echo else None,
+                tool_calls=[{"id": f"call_{i}", "type": "function",
+                             "function": {"name": "read_file", "arguments": f'{{"path": "f{i}.py"}}'}}],
+            ),
+            ChatMessage(role="tool", tool_call_id=f"call_{i}", content=f"content {i}"),
+        ]
+
+    def _build(self, messages):
+        request = ChatCompletionRequest(model="claude-sonnet-4-5", messages=messages, tools=self.TOOLS)
+        with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+            return build_kiro_payload(request, "conv-123", "arn:aws:test")
+
+    def test_tool_loop_payload_has_no_placeholder(self):
+        """
+        What it does: Converts a multi-step OpenAI tool loop.
+        Purpose: Same guarantee as the Anthropic path - no placeholder anywhere.
+        """
+        messages = [ChatMessage(role="user", content="Refactor the project")]
+        for i in range(3):
+            messages += self._tool_turns(i)
+
+        result = self._build(messages)
+
+        assert "(empty placeholder)" not in json.dumps(result)
+        assert result["conversationState"]["currentMessage"]["userInputMessage"]["content"] == ""
+
+    def test_previously_echoed_placeholders_are_cleaned(self):
+        """
+        What it does: Assistant messages whose text is an earlier placeholder echo.
+        Purpose: Polluted histories from OpenAI clients heal too.
+        """
+        messages = [ChatMessage(role="user", content="Refactor the project")]
+        for i in range(3):
+            messages += self._tool_turns(i, echo=True)
+
+        result = self._build(messages)
+
+        assert "(empty placeholder)" not in json.dumps(result)
+
+    def test_list_content_echo_block_is_not_glued_to_text(self):
+        """
+        What it does: Assistant content as a list with an echo block and real text.
+        Purpose: Block-level removal also works on the OpenAI path.
+        """
+        messages = [
+            ChatMessage(role="user", content="Read f0.py"),
+            ChatMessage(
+                role="assistant",
+                content=[{"type": "text", "text": "(empty placeholder)"}, {"type": "text", "text": "Reading now."}],
+                tool_calls=[{"id": "call_0", "type": "function",
+                             "function": {"name": "read_file", "arguments": '{"path": "f0.py"}'}}],
+            ),
+            ChatMessage(role="tool", tool_call_id="call_0", content="x"),
+        ]
+
+        result = self._build(messages)
+
+        assistant = next(h["assistantResponseMessage"] for h in result["conversationState"]["history"]
+                         if "assistantResponseMessage" in h)
+        assert assistant["content"] == "Reading now."
+
