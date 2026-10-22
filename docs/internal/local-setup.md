@@ -145,7 +145,8 @@ HTTP 200 - POST /v1/messages (streaming) - completed                ← 成功�
 | `prompt is too long` | 超出上下文窗口了，在 Claude Code 里执行 `/compact` |
 | 401 / 403，或者启动时报找不到凭证 | 执行 `kiro-cli login` 重新登录，然后重启网关 |
 | Claude Code 提示不认识某个模型 | 模型名用了带点的写法，改成短横线写法（见第一节） |
-| 调用部分 MCP 工具时报工具名超过 64 个字符 | 已知问题，见 README 的待办（#182） |
+| 报 `Tool name(s) exceed Kiro API limit of 64 characters` | 网关是旧版本。更新代码后重启网关即可，超长工具名现在会自动缩短 |
+| 回复里出现 `(empty placeholder)` | 网关是旧版本。更新代码后重启网关即可 |
 | kclaude 提示网关启动失败 | 查看 `~/Library/Logs/kiro-gateway.log` 的最后几行 |
 
 ---
@@ -180,5 +181,4 @@ Kiro 按 credits 计费，不同模型的倍率不同。Claude Code 每次请求
 ## 八、后续计划（尚未实施）
 
 - **一键安装脚本 + 开机自启**（macOS / Windows）：自动探测 kiro-cli 数据库、生成 `.env`、注册后台服务
-- **修复超长 MCP 工具名（#182）**：工具名超过 64 个字符时自动缩短，返回给客户端时再还原
 - **服务器部署，供公司内部共用**：已有结论是行得通。用户、key、用量和计费交给 参考项目 平台管理，kiro-gateway 只作为 参考项目 的一个上游。建议每个 Kiro 账号跑一个网关实例，由 参考项目 负责负载均衡。kiro-gateway 自带的多账号模式只做故障切换（用完一个再换下一个），不做负载均衡。上线前需要先确认公司的 Kiro 订阅允许多人共用账号

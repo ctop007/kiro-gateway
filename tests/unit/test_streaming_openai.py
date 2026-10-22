@@ -24,6 +24,7 @@ from kiro.streaming_openai import (
     collect_stream_response,
     FirstTokenTimeoutError,
 )
+from kiro.tool_names import ToolNameMap
 from kiro.streaming_core import KiroEvent, UpstreamStop
 
 
@@ -1922,3 +1923,73 @@ class TestStreamingOpenaiRequestRecord:
                     pass
 
         assert record.credits == pytest.approx(0.07)
+
+
+# ==================================================================================================
+# Tests for restoring shortened tool names (Kiro 64-character limit)
+# ==================================================================================================
+
+LONG_TOOL_NAME = "mcp__plugin_chrome-devtools-mcp_chrome-devtools__performance_analyze_insight"
+
+
+class TestStreamingOpenaiToolNameRestore:
+    """Shortened tool names returned by Kiro are restored before reaching the client."""
+
+    @staticmethod
+    def _stream(name):
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            yield KiroEvent(type="tool_use", tool_use={
+                "id": "call_1", "type": "function", "function": {"name": name, "arguments": "{}"}})
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.5)
+        return mock_parse_kiro_stream
+
+    @pytest.mark.asyncio
+    async def test_streaming_restores_original_name(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Kiro returns the shortened name in a streamed tool call.
+        Purpose: The client sees the original long name.
+        """
+        name_map = ToolNameMap.from_names([LONG_TOOL_NAME])
+        short = name_map.to_kiro(LONG_TOOL_NAME)
+        chunks = []
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._stream(short)):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                async for chunk in stream_kiro_to_openai(
+                    mock_http_client, mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager,
+                    tool_name_map=name_map,
+                ):
+                    chunks.append(chunk)
+
+        body = "".join(chunks)
+        assert LONG_TOOL_NAME in body
+        assert short not in body
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_restores_original_name(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Same as above through collect_stream_response().
+        Purpose: OpenAI non-streaming path restores names too.
+        """
+        name_map = ToolNameMap.from_names([LONG_TOOL_NAME])
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._stream(name_map.to_kiro(LONG_TOOL_NAME))):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                result = await collect_stream_response(
+                    mock_http_client, mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager,
+                    tool_name_map=name_map,
+                )
+
+        assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == LONG_TOOL_NAME
+
+    @pytest.mark.asyncio
+    async def test_without_map_names_pass_through(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: No tool_name_map given.
+        Purpose: Default behavior is unchanged.
+        """
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._stream("read_file")):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                result = await collect_stream_response(
+                    mock_http_client, mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager,
+                )
+
+        assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "read_file"

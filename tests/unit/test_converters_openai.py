@@ -2151,3 +2151,51 @@ class TestBuildKiroPayloadNoPlaceholderEcho:
                          if "assistantResponseMessage" in h)
         assert assistant["content"] == "Reading now."
 
+
+class TestBuildToolNameMapOpenai:
+    """Tests for converters_openai.build_tool_name_map()."""
+
+    LONG = "mcp__plugin_chrome-devtools-mcp_chrome-devtools__performance_analyze_insight"
+
+    def test_matches_names_sent_to_kiro(self):
+        """
+        What it does: Builds the map and the payload for the same request.
+        Purpose: Routes rebuild exactly the shortening the converter applied.
+        """
+        from kiro.converters_openai import build_tool_name_map
+        request = ChatCompletionRequest(
+            model="claude-sonnet-4-5",
+            messages=[ChatMessage(role="user", content="hi")],
+            tools=[Tool(type="function", function=ToolFunction(name=self.LONG, parameters={"type": "object"}))],
+        )
+        with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+            payload = build_kiro_payload(request, "conv-1", "arn:aws:test")
+        sent = payload["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"]["tools"][0]["toolSpecification"]["name"]
+
+        name_map = build_tool_name_map(request)
+
+        assert name_map.to_client(sent) == self.LONG
+
+    def test_flat_tool_format(self):
+        """
+        What it does: Cursor-style flat tool definition (name at top level).
+        Purpose: Both OpenAI tool formats are covered.
+        """
+        from kiro.converters_openai import build_tool_name_map
+        request = ChatCompletionRequest(
+            model="claude-sonnet-4-5",
+            messages=[ChatMessage(role="user", content="hi")],
+            tools=[Tool(type="function", name=self.LONG, input_schema={"type": "object"})],
+        )
+
+        assert len(build_tool_name_map(request)) == 1
+
+    def test_no_tools(self):
+        """
+        What it does: Request without tools.
+        Purpose: Empty map, no errors.
+        """
+        from kiro.converters_openai import build_tool_name_map
+        request = ChatCompletionRequest(model="claude-sonnet-4-5", messages=[ChatMessage(role="user", content="hi")])
+
+        assert not build_tool_name_map(request)

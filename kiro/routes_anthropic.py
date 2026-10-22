@@ -44,7 +44,7 @@ from kiro.models_anthropic import (
 )
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
-from kiro.converters_anthropic import anthropic_to_kiro
+from kiro.converters_anthropic import anthropic_to_kiro, build_tool_name_map
 from kiro.streaming_anthropic import (
     stream_kiro_to_anthropic,
     collect_anthropic_response,
@@ -418,6 +418,8 @@ async def _messages_impl(
             profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
             
             try:
+                # Same deterministic shortening as the converter, used to restore names in responses
+                tool_name_map = build_tool_name_map(request_data)
                 kiro_payload = anthropic_to_kiro(
                     request_data,
                     conversation_id,
@@ -496,6 +498,7 @@ async def _messages_impl(
                                     request_tools=tools_for_tokenizer,
                                     request_system=system_for_tokenizer,
                                     request_record=record,
+                                    tool_name_map=tool_name_map,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -547,6 +550,7 @@ async def _messages_impl(
                             request_tools=tools_for_tokenizer,
                             request_system=system_for_tokenizer,
                             request_record=record,
+                            tool_name_map=tool_name_map,
                         )
                         
                         await http_client.close()
@@ -724,6 +728,8 @@ async def _messages_impl(
     profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
     
     try:
+        # Same deterministic shortening as the converter, used to restore names in responses
+        tool_name_map = build_tool_name_map(request_data)
         kiro_payload = anthropic_to_kiro(
             request_data,
             conversation_id,
@@ -848,6 +854,7 @@ async def _messages_impl(
                         request_tools=tools_for_tokenizer,
                         request_system=system_for_tokenizer,
                         request_record=record,
+                        tool_name_map=tool_name_map,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -900,6 +907,7 @@ async def _messages_impl(
                 request_tools=tools_for_tokenizer,
                 request_system=system_for_tokenizer,
                 request_record=record,
+                tool_name_map=tool_name_map,
             )
             
             await http_client.close()

@@ -38,6 +38,7 @@ from kiro.model_resolver import get_model_id_for_kiro
 from kiro.models_openai import ChatMessage, ChatCompletionRequest, Tool
 
 # Import from core - reuse shared logic
+from kiro.tool_names import ToolNameMap
 from kiro.converters_core import (
     extract_text_content,
     extract_assistant_text,
@@ -394,6 +395,23 @@ def extract_thinking_config_from_openai(request: ChatCompletionRequest) -> Think
 # ==================================================================================================
 # Main Entry Point
 # ==================================================================================================
+
+def build_tool_name_map(request_data: ChatCompletionRequest) -> ToolNameMap:
+    """
+    Build the tool name map that build_kiro_payload() applies for this request.
+
+    Shortening is deterministic, so the routes can rebuild the same map to
+    restore shortened tool names in the response.
+
+    Args:
+        request_data: Request in OpenAI ChatCompletionRequest format
+
+    Returns:
+        ToolNameMap for the request's tools (empty if no name was shortened)
+    """
+    unified_tools = convert_openai_tools_to_unified(request_data.tools) or []
+    return ToolNameMap.from_names(tool.name for tool in unified_tools)
+
 
 def build_kiro_payload(
     request_data: ChatCompletionRequest,

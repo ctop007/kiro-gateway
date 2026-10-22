@@ -53,6 +53,7 @@ from kiro.streaming_core import (
     with_keepalive,
 )
 from kiro.tokenizer import count_tokens, estimate_request_tokens
+from kiro.tool_names import ToolNameMap
 from kiro.request_log import RequestRecord, OUTCOME_REFUSED
 from kiro.parsers import parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro.config import (
@@ -148,6 +149,7 @@ async def stream_kiro_to_anthropic(
     request_system: Optional[Any] = None,
     conversation_id: Optional[str] = None,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to Anthropic SSE format.
@@ -168,6 +170,7 @@ async def stream_kiro_to_anthropic(
         request_record: Request log record to fill with response ID, credits and
             refusal outcome (optional). Credits are added as metering events
             arrive, so a stream that fails mid-way still reports what was billed.
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Yields:
         Strings in Anthropic SSE format
@@ -366,6 +369,9 @@ async def stream_kiro_to_anthropic(
                     current_block_index += 1
                 
                 tool = event.tool_use
+                # Restore client tool names that were shortened for Kiro's 64-char limit
+                if tool_name_map:
+                    tool_name_map.restore_tool_call(tool)
                 tool_id = tool.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
                 tool_name = tool.get("function", {}).get("name", "") or tool.get("name", "")
                 tool_input = tool.get("function", {}).get("arguments", {}) or tool.get("input", {})
@@ -585,6 +591,8 @@ async def stream_kiro_to_anthropic(
                 current_block_index += 1
             
             for tc in bracket_tool_calls:
+                if tool_name_map:
+                    tool_name_map.restore_tool_call(tc)
                 tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
                 tool_name = tc.get("function", {}).get("name", "")
                 tool_input = tc.get("function", {}).get("arguments", {})
@@ -771,6 +779,7 @@ async def collect_anthropic_response(
     request_tools: Optional[list] = None,
     request_system: Optional[Any] = None,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> dict:
     """
     Collect full response from Kiro stream in Anthropic format.
@@ -787,6 +796,7 @@ async def collect_anthropic_response(
         request_system: Original system prompt (for token counting)
         request_record: Request log record to fill with response ID, credits and
             refusal outcome (optional)
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Returns:
         Dictionary with full response in Anthropic Messages format
@@ -841,6 +851,9 @@ async def collect_anthropic_response(
     
     # Add tool use blocks
     for tc in result.tool_calls:
+        # Restore client tool names that were shortened for Kiro's 64-char limit
+        if tool_name_map:
+            tool_name_map.restore_tool_call(tc)
         tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
         tool_name = tc.get("function", {}).get("name", "") or tc.get("name", "")
         tool_input = tc.get("function", {}).get("arguments", {}) or tc.get("input", {})
@@ -938,6 +951,7 @@ async def stream_with_first_token_retry_anthropic(
     request_system: Optional[Any] = None,
     keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout for Anthropic API.
@@ -962,6 +976,7 @@ async def stream_with_first_token_retry_anthropic(
         request_system: Original system prompt (for fallback token counting)
         keepalive_interval: Seconds of silence before sending a `ping` event (0 disables)
         request_record: Request log record to fill (optional, shared across retries)
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Yields:
         Strings in Anthropic SSE format
@@ -1001,6 +1016,7 @@ async def stream_with_first_token_retry_anthropic(
             request_tools=request_tools,
             request_system=request_system,
             request_record=request_record,
+            tool_name_map=tool_name_map,
         ):
             yield chunk
     

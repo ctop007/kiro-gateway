@@ -25,6 +25,7 @@ from kiro.streaming_anthropic import (
     collect_anthropic_response,
     stream_with_first_token_retry_anthropic,
 )
+from kiro.tool_names import ToolNameMap
 from kiro.streaming_core import KiroEvent, StreamResult, UpstreamStop
 
 
@@ -2083,3 +2084,63 @@ class TestStreamingAnthropicRequestRecord:
         with_record = await run(start_request_record(api="anthropic", model="claude-sonnet-4", stream=False))
 
         assert with_record == without_record
+
+
+# ==================================================================================================
+# Tests for restoring shortened tool names (Kiro 64-character limit)
+# ==================================================================================================
+
+LONG_TOOL_NAME = "mcp__plugin_chrome-devtools-mcp_chrome-devtools__performance_analyze_insight"
+
+
+class TestStreamingAnthropicToolNameRestore:
+    """Shortened tool names returned by Kiro are restored before reaching the client."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_restores_event_and_bracket_tool_names(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Shortened names in a tool_use event and in a bracket-style tool call.
+        Purpose: Both streaming sources of tool calls are restored.
+        """
+        name_map = ToolNameMap.from_names([LONG_TOOL_NAME, LONG_TOOL_NAME + "_2"])
+        short_1 = name_map.to_kiro(LONG_TOOL_NAME)
+        short_2 = name_map.to_kiro(LONG_TOOL_NAME + "_2")
+
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            yield KiroEvent(type="tool_use", tool_use={
+                "id": "toolu_1", "function": {"name": short_1, "arguments": "{}"}})
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.5)
+
+        bracket = [{"id": "toolu_2", "type": "function", "function": {"name": short_2, "arguments": "{}"}}]
+        events = []
+        with patch('kiro.streaming_anthropic.parse_kiro_stream', mock_parse_kiro_stream):
+            with patch('kiro.streaming_anthropic.parse_bracket_tool_calls', return_value=bracket):
+                async for event in stream_kiro_to_anthropic(
+                    mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager,
+                    tool_name_map=name_map,
+                ):
+                    events.append(event)
+
+        body = "".join(events)
+        assert LONG_TOOL_NAME in body and LONG_TOOL_NAME + "_2" in body
+        assert short_1 not in body and short_2 not in body
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_restores_original_name(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Shortened name in collect_anthropic_response().
+        Purpose: Anthropic non-streaming path restores names too.
+        """
+        name_map = ToolNameMap.from_names([LONG_TOOL_NAME])
+        mock_result = StreamResult(
+            content="", context_usage_percentage=0.5,
+            tool_calls=[{"id": "toolu_1", "function": {"name": name_map.to_kiro(LONG_TOOL_NAME), "arguments": "{}"}}],
+        )
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=mock_result):
+            result = await collect_anthropic_response(
+                mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager,
+                tool_name_map=name_map,
+            )
+
+        tool_blocks = [b for b in result["content"] if b["type"] == "tool_use"]
+        assert tool_blocks[0]["name"] == LONG_TOOL_NAME

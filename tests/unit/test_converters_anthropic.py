@@ -2289,3 +2289,40 @@ class TestAnthropicToKiroNoPlaceholderEcho:
                          if "assistantResponseMessage" in h)
         assert assistant["content"] == "Reading the file now."
 
+
+class TestBuildToolNameMapAnthropic:
+    """Tests for converters_anthropic.build_tool_name_map()."""
+
+    LONG = "mcp__plugin_chrome-devtools-mcp_chrome-devtools__performance_analyze_insight"
+
+    def test_matches_names_sent_to_kiro(self):
+        """
+        What it does: Builds the map and the payload for the same request.
+        Purpose: Routes rebuild exactly the shortening the converter applied.
+        """
+        from kiro.converters_anthropic import build_tool_name_map
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5", max_tokens=100,
+            messages=[AnthropicMessage(role="user", content="hi")],
+            tools=[AnthropicTool(name=self.LONG, input_schema={"type": "object"})],
+        )
+        with patch("kiro.converters_anthropic.get_model_id_for_kiro", return_value="claude-sonnet-4.5"):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                payload = anthropic_to_kiro(request, "conv-1", "arn:aws:test")
+        sent = payload["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"]["tools"][0]["toolSpecification"]["name"]
+
+        name_map = build_tool_name_map(request)
+
+        assert len(sent) == 64
+        assert name_map.to_client(sent) == self.LONG
+
+    def test_no_tools(self):
+        """
+        What it does: Request without tools.
+        Purpose: Empty map, no errors.
+        """
+        from kiro.converters_anthropic import build_tool_name_map
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5", max_tokens=100, messages=[AnthropicMessage(role="user", content="hi")])
+
+        assert not build_tool_name_map(request)

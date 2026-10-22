@@ -197,10 +197,11 @@ kiro-cli 数据库里没有 profile 信息。先用 kiro-cli 正常对话一次�
 3. **修复 #149 的崩溃**：工具名或参数为空时，token 计数会抛异常。
 4. **修复 #225 丢数据**：工具参数同时以字符串和对象两种形式下发时，有一部分会被丢弃。
 5. **结构化请求日志（可选）**：设置 `REQUEST_LOG_DIR` 后，每个请求在 `requests-YYYY-MM.jsonl` 里记一行，包括时间、模型、状态、耗时、credits，不含对话内容。OpenAI / Anthropic、流式 / 非流式四条路径行为一致，失败、拒答、中途断开都会记录。桌面端用它统计 credits。
+6. **不再输出 `(empty placeholder)`**：上游会给只有工具调用或工具结果的消息填占位文本，模型在长对话里会学着说这句话。现在这类消息发送空文本，历史里模型已经说过的也会被清理。
+7. **支持超过 64 个字符的工具名**（重写上游 [#182](https://github.com/jwadow/kiro-gateway/pull/182)）：Kiro 限制工具名最长 64 个字符，上游遇到超长的就直接拒绝整个请求（例如 Claude Code 的 chrome-devtools 插件）。现在发给 Kiro 时自动缩短：保留末尾真正的工具名，把前面的插件前缀压缩成哈希；Kiro 返回时再还原成原名，客户端完全感知不到。
 
 ### 待办
 
-- [#182](https://github.com/jwadow/kiro-gateway/pull/182)：工具名超过 64 个字符时（例如 chrome-devtools MCP 插件的部分工具），整个请求会被拒绝。PR 方向正确，但实现需要重写
 - [#165](https://github.com/jwadow/kiro-gateway/pull/165)：PDF 附件支持，需要先修改
 - 一键安装脚本 + 开机自启（macOS / Windows）
 - 确认 Windows 上 kiro-cli 数据库的路径

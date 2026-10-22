@@ -46,6 +46,7 @@ from kiro.config import (
     EXPOSE_CREDITS_USED,
 )
 from kiro.tokenizer import count_tokens, count_message_tokens, count_tools_tokens
+from kiro.tool_names import ToolNameMap
 from kiro.request_log import RequestRecord, OUTCOME_REFUSED
 
 # Import from streaming_core - reuse shared parsing logic
@@ -91,6 +92,7 @@ async def stream_kiro_to_openai_internal(
     request_tools: Optional[list] = None,
     conversation_id: Optional[str] = None,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Internal generator for converting Kiro stream to OpenAI format.
@@ -114,6 +116,7 @@ async def stream_kiro_to_openai_internal(
         request_record: Request log record to fill with response ID, credits and
             refusal outcome (optional). Credits are added as metering events
             arrive, so a stream that fails mid-way still reports what was billed.
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Yields:
         Strings in SSE format: "data: {...}\\n\\n" or "data: [DONE]\\n\\n"
@@ -315,6 +318,9 @@ async def stream_kiro_to_openai_internal(
         bracket_tool_calls = parse_bracket_tool_calls(full_content)
         all_tool_calls = tool_calls_from_stream + bracket_tool_calls
         all_tool_calls = deduplicate_tool_calls(all_tool_calls)
+        # Restore client tool names that were shortened for Kiro's 64-char limit
+        if tool_name_map:
+            all_tool_calls = [tool_name_map.restore_tool_call(tc) for tc in all_tool_calls]
         
         # Detect content truncation (missing completion signals)
         content_was_truncated = (
@@ -502,6 +508,7 @@ async def stream_kiro_to_openai(
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to OpenAI format.
@@ -518,6 +525,7 @@ async def stream_kiro_to_openai(
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
         request_record: Request log record to fill (optional)
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Yields:
         Strings in SSE format: "data: {...}\\n\\n" or "data: [DONE]\\n\\n"
@@ -527,6 +535,7 @@ async def stream_kiro_to_openai(
         request_messages=request_messages,
         request_tools=request_tools,
         request_record=request_record,
+        tool_name_map=tool_name_map,
     ):
         yield chunk
 
@@ -544,6 +553,7 @@ async def stream_with_first_token_retry(
     request_tools: Optional[list] = None,
     keepalive_interval: float = STREAM_KEEPALIVE_INTERVAL,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout.
@@ -570,6 +580,7 @@ async def stream_with_first_token_retry(
         request_tools: Original request tools (for fallback token counting)
         keepalive_interval: Seconds of silence before sending an SSE comment (0 disables)
         request_record: Request log record to fill (optional, shared across retries)
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Yields:
         Strings in SSE format
@@ -612,6 +623,7 @@ async def stream_with_first_token_retry(
             request_messages=request_messages,
             request_tools=request_tools,
             request_record=request_record,
+            tool_name_map=tool_name_map,
         ):
             yield chunk
     
@@ -640,6 +652,7 @@ async def collect_stream_response(
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
     request_record: Optional[RequestRecord] = None,
+    tool_name_map: Optional[ToolNameMap] = None,
 ) -> dict:
     """
     Collect full response from streaming stream.
@@ -656,6 +669,7 @@ async def collect_stream_response(
         request_messages: Original request messages (for fallback token counting)
         request_tools: Original request tools (for fallback token counting)
         request_record: Request log record to fill (optional)
+        tool_name_map: Maps shortened tool names back to the client's names (optional)
     
     Returns:
         Dictionary with full response in OpenAI chat.completion format
@@ -676,6 +690,7 @@ async def collect_stream_response(
         request_messages=request_messages,
         request_tools=request_tools,
         request_record=request_record,
+        tool_name_map=tool_name_map,
     ):
         if not chunk_str.startswith("data:"):
             continue

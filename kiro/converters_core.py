@@ -31,7 +31,7 @@ to convert their formats to Kiro API format.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
@@ -45,6 +45,7 @@ from kiro.config import (
     AUTO_TRIM_PAYLOAD,
 )
 from kiro.payload_guards import check_payload_size, trim_payload_to_limit
+from kiro.tool_names import ToolNameMap
 
 
 # ==================================================================================================
@@ -793,46 +794,52 @@ def process_tools_with_long_descriptions(
     return processed_tools if processed_tools else None, tool_documentation
 
 
-def validate_tool_names(tools: Optional[List[UnifiedTool]]) -> None:
+def shorten_tool_names_for_kiro(
+    tools: Optional[List[UnifiedTool]]
+) -> Tuple[Optional[List[UnifiedTool]], ToolNameMap]:
     """
-    Validates tool names against Kiro API 64-character limit.
-    
-    Logs WARNING for each problematic tool and raises ValueError
-    with complete list of violations.
-    
+    Shorten tool names that exceed Kiro's 64-character limit.
+
+    Kiro rejects longer names, which MCP clients produce routinely (e.g. Claude
+    Code's chrome-devtools plugin). Instead of rejecting the request, long names
+    are shortened here and restored in responses via the returned map.
+
     Args:
-        tools: List of tools to validate
-    
+        tools: Tools from the client (not modified)
+
+    Returns:
+        Tuple of (tools with Kiro-safe names, name map for this request)
+
     Raises:
-        ValueError: If any tool name exceeds 64 characters
-    
-    Example:
-        >>> validate_tool_names([UnifiedTool(name="short_name", description="test")])
-        # No error
-        >>> validate_tool_names([UnifiedTool(name="a" * 70, description="test")])
-        # Raises ValueError with detailed message
+        ValueError: If two tools cannot be told apart after shortening
     """
-    if not tools:
-        return
-    
-    problematic_tools = []
-    for tool in tools:
-        if len(tool.name) > 64:
-            problematic_tools.append((tool.name, len(tool.name)))
-    
-    if problematic_tools:
-        # Build detailed error message for client (no logging here - routes will log)
-        tool_list = "\n".join([
-            f"  - '{name}' ({length} characters)"
-            for name, length in problematic_tools
-        ])
-        
-        raise ValueError(
-            f"Tool name(s) exceed Kiro API limit of 64 characters:\n"
-            f"{tool_list}\n\n"
-            f"Solution: Use shorter tool names (max 64 characters).\n"
-            f"Example: 'get_user_data' instead of 'get_authenticated_user_profile_data_with_extended_information_about_it'"
-        )
+    name_map = ToolNameMap.from_names(tool.name for tool in tools or [])
+    if not tools or not name_map:
+        return tools, name_map
+
+    logger.info(
+        f"Shortened {len(name_map)} tool name(s) exceeding Kiro's 64-character limit; "
+        f"original names are restored in responses"
+    )
+    return [replace(tool, name=name_map.to_kiro(tool.name)) for tool in tools], name_map
+
+
+def shorten_history_tool_names(history: List[Dict[str, Any]], name_map: ToolNameMap) -> None:
+    """
+    Apply the request's tool name shortening to tool uses in Kiro history, in place.
+
+    Earlier assistant turns reference tools by their original names; they must
+    match the shortened tool definitions, and Kiro enforces the same limit there.
+
+    Args:
+        history: Kiro history entries
+        name_map: Tool name map for this request
+    """
+    for entry in history:
+        tool_uses = entry.get("assistantResponseMessage", {}).get("toolUses") or []
+        for tool_use in tool_uses:
+            if isinstance(tool_use.get("name"), str):
+                tool_use["name"] = name_map.to_kiro(tool_use["name"])
 
 
 def convert_tools_to_kiro_format(tools: Optional[List[UnifiedTool]]) -> List[Dict[str, Any]]:
@@ -1674,11 +1681,12 @@ def build_kiro_payload(
     Raises:
         ValueError: If there are no messages to send
     """
-    # Process tools with long descriptions
-    processed_tools, tool_documentation = process_tools_with_long_descriptions(tools)
+    # Shorten tool names over Kiro's 64-character limit (restored in responses).
+    # Done first so tool documentation and history use the same names the model sees.
+    kiro_named_tools, tool_name_map = shorten_tool_names_for_kiro(tools)
     
-    # Validate tool names against Kiro API 64-character limit
-    validate_tool_names(processed_tools)
+    # Process tools with long descriptions
+    processed_tools, tool_documentation = process_tools_with_long_descriptions(kiro_named_tools)
     
     # Add tool documentation to system prompt if present
     full_system_prompt = system_prompt
@@ -1735,6 +1743,7 @@ def build_kiro_payload(
             first_msg.content = f"{full_system_prompt}\n\n{original_content}"
     
     history = build_kiro_history(history_messages, model_id)
+    shorten_history_tool_names(history, tool_name_map)
     
     # Current message (the last one)
     current_message = merged_messages[-1]

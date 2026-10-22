@@ -47,7 +47,7 @@ from kiro.models_openai import (
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
-from kiro.converters_openai import build_kiro_payload
+from kiro.converters_openai import build_kiro_payload, build_tool_name_map
 from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
 from kiro.request_log import (
     RequestRecord,
@@ -408,6 +408,8 @@ async def _chat_completions_impl(
             profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
             
             try:
+                # Same deterministic shortening as the converter, used to restore names in responses
+                tool_name_map = build_tool_name_map(request_data)
                 kiro_payload = build_kiro_payload(
                     request_data,
                     conversation_id,
@@ -472,6 +474,7 @@ async def _chat_completions_impl(
                                     request_messages=messages_for_tokenizer,
                                     request_tools=tools_for_tokenizer,
                                     request_record=record,
+                                    tool_name_map=tool_name_map,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -517,6 +520,7 @@ async def _chat_completions_impl(
                             request_messages=messages_for_tokenizer,
                             request_tools=tools_for_tokenizer,
                             request_record=record,
+                            tool_name_map=tool_name_map,
                         )
                         
                         await http_client.close()
@@ -658,6 +662,8 @@ async def _chat_completions_impl(
     profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
     
     try:
+        # Same deterministic shortening as the converter, used to restore names in responses
+        tool_name_map = build_tool_name_map(request_data)
         kiro_payload = build_kiro_payload(
             request_data,
             conversation_id,
@@ -766,6 +772,7 @@ async def _chat_completions_impl(
                         request_messages=messages_for_tokenizer,
                         request_tools=tools_for_tokenizer,
                         request_record=record,
+                        tool_name_map=tool_name_map,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -815,6 +822,7 @@ async def _chat_completions_impl(
                 request_messages=messages_for_tokenizer,
                 request_tools=tools_for_tokenizer,
                 request_record=record,
+                tool_name_map=tool_name_map,
             )
             
             await http_client.close()

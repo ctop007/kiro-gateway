@@ -35,6 +35,7 @@ from kiro.models_anthropic import (
     AnthropicMessage,
     AnthropicTool,
 )
+from kiro.tool_names import ToolNameMap
 from kiro.converters_core import (
     UnifiedMessage,
     UnifiedTool,
@@ -477,6 +478,23 @@ def extract_thinking_config_from_anthropic(request: AnthropicMessagesRequest) ->
     
     # Unknown type → use defaults
     return ThinkingConfig(enabled=True, budget_tokens=None)
+
+
+def build_tool_name_map(request: AnthropicMessagesRequest) -> ToolNameMap:
+    """
+    Build the tool name map that anthropic_to_kiro() applies for this request.
+
+    Shortening is deterministic, so the routes can rebuild the same map to
+    restore shortened tool names in the response.
+
+    Args:
+        request: Anthropic Messages API request
+
+    Returns:
+        ToolNameMap for the request's tools (empty if no name was shortened)
+    """
+    unified_tools = convert_anthropic_tools(request.tools) or []
+    return ToolNameMap.from_names(tool.name for tool in unified_tools)
 
 
 def anthropic_to_kiro(
