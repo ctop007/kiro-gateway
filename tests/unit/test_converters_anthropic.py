@@ -2326,3 +2326,106 @@ class TestBuildToolNameMapAnthropic:
             model="claude-sonnet-4-5", max_tokens=100, messages=[AnthropicMessage(role="user", content="hi")])
 
         assert not build_tool_name_map(request)
+
+
+class TestServerWebSearchHistoryConversion:
+    """
+    Converting replayed server-side web search blocks.
+
+    Kiro has no server_tool_use concept, so the search turn is kept as plain
+    assistant text: the query and the result titles/URLs stay in context, the
+    opaque encrypted_content does not.
+    """
+
+    @staticmethod
+    def _messages():
+        from kiro.models_anthropic import AnthropicMessage
+        return [
+            AnthropicMessage(role="user", content="search for kiro cli"),
+            AnthropicMessage(role="assistant", content=[
+                {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "kiro cli"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+                    {"type": "web_search_result", "title": "Kiro CLI", "url": "https://kiro.dev/cli/",
+                     "encrypted_content": "OPAQUE-ENCRYPTED"},
+                    {"type": "web_search_result", "title": "Docs", "url": "https://kiro.dev/docs/",
+                     "encrypted_content": "OPAQUE-ENCRYPTED"},
+                ]},
+                {"type": "text", "text": "Kiro CLI is documented at kiro.dev."},
+            ]),
+            AnthropicMessage(role="user", content="thanks"),
+        ]
+
+    def test_search_turn_is_kept_as_assistant_text(self):
+        """
+        What it does: Converts history containing a web search turn.
+        Purpose: Query, result titles and URLs survive; the model can refer back to them.
+        """
+        from kiro.converters_anthropic import convert_anthropic_messages
+
+        unified = convert_anthropic_messages(self._messages())
+        assistant = unified[1].content
+
+        assert "kiro cli" in assistant
+        assert "Kiro CLI" in assistant and "https://kiro.dev/cli/" in assistant
+        assert "https://kiro.dev/docs/" in assistant
+        assert assistant.rstrip().endswith("Kiro CLI is documented at kiro.dev.")
+
+    def test_encrypted_content_is_not_forwarded(self):
+        """
+        What it does: Checks the opaque encrypted_content blob is dropped.
+        Purpose: It is meaningless to Kiro and would only waste context.
+        """
+        from kiro.converters_anthropic import convert_anthropic_messages
+
+        unified = convert_anthropic_messages(self._messages())
+
+        assert "OPAQUE-ENCRYPTED" not in unified[1].content
+
+    def test_search_blocks_are_not_tool_calls(self):
+        """
+        What it does: Checks server_tool_use does not become a Kiro tool call.
+        Purpose: A tool call with no matching tool result would be rejected by Kiro.
+        """
+        from kiro.converters_anthropic import convert_anthropic_messages
+
+        unified = convert_anthropic_messages(self._messages())
+
+        assert unified[1].tool_calls is None
+
+    def test_failed_search_is_described(self):
+        """
+        What it does: Converts a web_search_tool_result carrying an error object.
+        Purpose: The model learns the search failed instead of seeing nothing.
+        """
+        from kiro.models_anthropic import AnthropicMessage
+        from kiro.converters_anthropic import convert_anthropic_messages
+
+        unified = convert_anthropic_messages([
+            AnthropicMessage(role="user", content="q"),
+            AnthropicMessage(role="assistant", content=[
+                {"type": "server_tool_use", "id": "s", "name": "web_search", "input": {"query": "q"}},
+                {"type": "web_search_tool_result", "tool_use_id": "s",
+                 "content": {"type": "web_search_tool_result_error", "error_code": "max_uses_exceeded"}},
+            ]),
+        ])
+
+        assert "max_uses_exceeded" in unified[1].content
+
+    def test_full_request_with_search_history_reaches_payload(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Sends the follow-up request through the real app (count_tokens, no upstream call).
+        Purpose: End-to-end guard against the 422 Claude Code hit after a web search.
+        """
+        body = {"model": "claude-sonnet-4-5", "messages": [
+            {"role": "user", "content": "search"},
+            {"role": "assistant", "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "x"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+                    {"type": "web_search_result", "title": "T", "url": "https://e.com", "encrypted_content": "abc"}]},
+                {"type": "text", "text": "Found.", "citations": [{"type": "web_search_result_location",
+                    "url": "https://e.com", "title": "T", "encrypted_index": "x", "cited_text": "y"}]}]},
+            {"role": "user", "content": "thanks"}]}
+
+        response = test_client.post("/v1/messages/count_tokens", headers={"x-api-key": valid_proxy_api_key}, json=body)
+
+        assert response.status_code == 200

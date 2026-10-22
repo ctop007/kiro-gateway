@@ -1806,3 +1806,62 @@ class TestThinkingParameter:
         print(f"Comparing thinking: got={request.thinking}")
         assert request.thinking is not None
         assert request.thinking["type"] == "disabled"
+
+
+class TestServerWebSearchContentBlocks:
+    """
+    Server-side web search blocks replayed in conversation history.
+
+    Claude Code sends back the assistant's own server_tool_use and
+    web_search_tool_result blocks on the next turn. Rejecting them turned every
+    follow-up after a web search into a 422.
+    """
+
+    HISTORY = [
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "kiro cli"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+            {"type": "web_search_result", "title": "Kiro CLI", "url": "https://kiro.dev/cli/",
+             "encrypted_content": "opaque", "page_age": None},
+        ]},
+        {"type": "text", "text": "Found it.", "citations": [
+            {"type": "web_search_result_location", "url": "https://kiro.dev/cli/", "title": "Kiro CLI",
+             "encrypted_index": "x", "cited_text": "y"},
+        ]},
+    ]
+
+    def test_message_with_web_search_history_is_accepted(self):
+        """
+        What it does: Validates an assistant message holding a full web search turn.
+        Purpose: The follow-up request after a web search must not fail validation.
+        """
+        from kiro.models_anthropic import AnthropicMessage
+
+        msg = AnthropicMessage(role="assistant", content=self.HISTORY)
+
+        assert [b.type for b in msg.content] == ["server_tool_use", "web_search_tool_result", "text"]
+
+    def test_web_search_error_result_is_accepted(self):
+        """
+        What it does: Validates a web_search_tool_result whose content is an error object.
+        Purpose: Anthropic returns {"type": "web_search_tool_result_error"} when a search fails.
+        """
+        from kiro.models_anthropic import AnthropicMessage
+
+        msg = AnthropicMessage(role="assistant", content=[
+            {"type": "server_tool_use", "id": "srvtoolu_2", "name": "web_search", "input": {"query": "q"}},
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_2",
+             "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}},
+        ])
+
+        assert msg.content[1].type == "web_search_tool_result"
+
+    def test_server_tool_use_requires_id_and_name(self):
+        """
+        What it does: Rejects a server_tool_use block without id.
+        Purpose: Accepting the block type must not accept malformed blocks.
+        """
+        from pydantic import ValidationError
+        from kiro.models_anthropic import AnthropicMessage
+
+        with pytest.raises(ValidationError):
+            AnthropicMessage(role="assistant", content=[{"type": "server_tool_use", "name": "web_search", "input": {}}])

@@ -48,6 +48,48 @@ from kiro.converters_core import (
 )
 
 
+# Server-side web search blocks that clients replay from history. Kiro has no
+# server tool concept, so they are rendered as assistant text (see below).
+SERVER_WEB_SEARCH_BLOCK_TYPES = frozenset({"server_tool_use", "web_search_tool_result"})
+
+
+def describe_server_web_search_block(block: Dict[str, Any]) -> str:
+    """
+    Render a replayed server-side web search block as plain text.
+
+    Keeps what the model needs to refer back to the search (query, result
+    titles and URLs, or the error code) and drops the opaque
+    ``encrypted_content`` blobs, which mean nothing to Kiro.
+
+    Args:
+        block: server_tool_use or web_search_tool_result block as a dict
+
+    Returns:
+        Text line(s) ending with a newline, or "" for an unusable block
+    """
+    if block.get("type") == "server_tool_use":
+        query = (block.get("input") or {}).get("query", "")
+        return f"[web search: {query}]\n" if query else "[web search]\n"
+
+    content = block.get("content")
+    if isinstance(content, dict):
+        error_code = content.get("error_code", "unknown_error")
+        return f"[web search failed: {error_code}]\n"
+    if not isinstance(content, list):
+        return ""
+    lines = []
+    for result in content:
+        if not isinstance(result, dict):
+            continue
+        title = result.get("title") or ""
+        url = result.get("url") or ""
+        if title or url:
+            lines.append(f"- {title} ({url})" if title and url else f"- {title or url}")
+    if not lines:
+        return "[web search results: none]\n"
+    return "[web search results]\n" + "\n".join(lines) + "\n"
+
+
 def convert_anthropic_content_to_text(content: Any) -> str:
     """
     Extracts text content from Anthropic message content.
@@ -68,11 +110,16 @@ def convert_anthropic_content_to_text(content: Any) -> str:
     if isinstance(content, list):
         text_parts = []
         for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-            elif hasattr(block, "type") and block.type == "text":
-                text_parts.append(block.text)
+            block_dict = block if isinstance(block, dict) else (
+                block.model_dump() if hasattr(block, "model_dump") else None
+            )
+            if block_dict is None:
+                continue
+            block_type = block_dict.get("type")
+            if block_type == "text":
+                text_parts.append(block_dict.get("text", ""))
+            elif block_type in SERVER_WEB_SEARCH_BLOCK_TYPES:
+                text_parts.append(describe_server_web_search_block(block_dict))
         return "".join(text_parts)
 
     return str(content) if content else ""

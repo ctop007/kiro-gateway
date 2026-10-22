@@ -176,6 +176,41 @@ class ImageContentBlock(BaseModel):
     source: Union[Base64ImageSource, URLImageSource]
 
 
+class ServerToolUseContentBlock(BaseModel):
+    """
+    Server-side tool call (Anthropic web search) replayed from history.
+
+    Anthropic runs server tools itself; clients such as Claude Code echo the
+    assistant's server_tool_use block back on the next turn. Kiro has no such
+    concept, so the converter turns it into assistant text.
+    """
+
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+class WebSearchToolResultContentBlock(BaseModel):
+    """
+    Result of a server-side web search, replayed from history.
+
+    Attributes:
+        type: Always "web_search_tool_result"
+        tool_use_id: ID of the matching server_tool_use block
+        content: List of web_search_result objects, or an error object
+            ({"type": "web_search_tool_result_error", "error_code": ...})
+    """
+
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[List[Dict[str, Any]], Dict[str, Any]] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
 # Union type for all content blocks (including images and thinking)
 ContentBlock = Union[
     TextContentBlock,
@@ -185,6 +220,8 @@ ContentBlock = Union[
     ToolUseContentBlock,
     ToolResultContentBlock,
     ToolReferenceContentBlock,
+    ServerToolUseContentBlock,
+    WebSearchToolResultContentBlock,
 ]
 
 

@@ -199,6 +199,7 @@ kiro-cli 数据库里没有 profile 信息。先用 kiro-cli 正常对话一次�
 5. **结构化请求日志（可选）**：设置 `REQUEST_LOG_DIR` 后，每个请求在 `requests-YYYY-MM.jsonl` 里记一行，包括时间、模型、状态、耗时、credits，不含对话内容。OpenAI / Anthropic、流式 / 非流式四条路径行为一致，失败、拒答、中途断开都会记录。桌面端用它统计 credits。
 6. **不再输出 `(empty placeholder)`**：上游会给只有工具调用或工具结果的消息填占位文本，模型在长对话里会学着说这句话。现在这类消息发送空文本，历史里模型已经说过的也会被清理。
 7. **支持超过 64 个字符的工具名**（重写上游 [#182](https://github.com/jwadow/kiro-gateway/pull/182)）：Kiro 限制工具名最长 64 个字符，上游遇到超长的就直接拒绝整个请求（例如 Claude Code 的 chrome-devtools 插件）。现在发给 Kiro 时自动缩短：保留末尾真正的工具名，把前面的插件前缀压缩成哈希；Kiro 返回时再还原成原名，客户端完全感知不到。
+8. **网页搜索后的下一轮不再 422**：Claude Code 会把上一轮的 `server_tool_use` / `web_search_tool_result` 原样带回，以前直接校验失败。现在接受这两种块，并把搜索词、结果标题和链接转成助手文本交给 Kiro（丢弃无意义的 `encrypted_content`）。
 
 ### 待办
 
