@@ -46,6 +46,9 @@ from kiro.streaming_core import (
     KiroEvent,
     calculate_tokens_from_context_usage,
     tool_calls_to_countable_text,
+    log_upstream_refusal,
+    UpstreamStop,
+    ANTHROPIC_REFUSAL_STOP_REASON,
     stream_with_first_token_retry,
     with_keepalive,
 )
@@ -209,6 +212,7 @@ async def stream_kiro_to_anthropic(
     # several upstream calls (tool use), each emitting its own metering event.
     credits_used = 0.0
     upstream_calls = 0
+    upstream_stop: Optional[UpstreamStop] = None
 
     # Track truncated tool calls for recovery
     truncated_tools: List[Dict[str, Any]] = []
@@ -537,6 +541,8 @@ async def stream_kiro_to_anthropic(
             elif event.type == "metering" and event.credits:
                 credits_used += event.credits
                 upstream_calls += 1
+            elif event.type == "stop" and event.stop:
+                upstream_stop = event.stop
 
         # Credits actually billed upstream. req= is the dedup key for log-based
         # reconciliation, so keep it in the line.
@@ -657,8 +663,12 @@ async def stream_kiro_to_anthropic(
             if prompt_source != "unknown":
                 input_tokens = prompt_tokens
         
-        # Determine stop reason (truncation has highest priority)
-        if content_was_truncated:
+        # Determine stop reason. An explicit upstream refusal wins: it explains
+        # an otherwise empty response, which would look like a normal end_turn.
+        if upstream_stop and upstream_stop.is_refusal:
+            log_upstream_refusal(upstream_stop, model, message_id)
+            stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+        elif content_was_truncated:
             stop_reason = "max_tokens"
         elif tool_blocks:
             stop_reason = "tool_use"
@@ -861,8 +871,12 @@ async def collect_anthropic_response(
             f"{'Model will be notified automatically about truncation.' if TRUNCATION_RECOVERY else 'Set TRUNCATION_RECOVERY=true in .env to auto-notify model about truncation.'}"
         )
     
-    # Determine stop reason (truncation has highest priority)
-    if content_was_truncated:
+    # Determine stop reason. An explicit upstream refusal wins: it explains
+    # an otherwise empty response, which would look like a normal end_turn.
+    if result.stop and result.stop.is_refusal:
+        log_upstream_refusal(result.stop, model, message_id)
+        stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+    elif content_was_truncated:
         stop_reason = "max_tokens"
     elif result.tool_calls:
         stop_reason = "tool_use"

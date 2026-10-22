@@ -25,7 +25,7 @@ from kiro.streaming_anthropic import (
     collect_anthropic_response,
     stream_with_first_token_retry_anthropic,
 )
-from kiro.streaming_core import KiroEvent, StreamResult
+from kiro.streaming_core import KiroEvent, StreamResult, UpstreamStop
 
 
 # ==================================================================================================
@@ -1539,6 +1539,109 @@ class TestStreamWithFirstTokenRetryAnthropic:
 # ==================================================================================================
 # Tests for truncation detection
 # ==================================================================================================
+
+class TestStreamingAnthropicUpstreamRefusal:
+    """Tests for surfacing Kiro refusals (CONTENT_FILTERED) in Anthropic format."""
+
+    @staticmethod
+    def _refusal_stream(*leading_events):
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            for event in leading_events:
+                yield event
+            yield KiroEvent(type="stop", stop=UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "No"))
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.77)
+        return mock_parse_kiro_stream
+
+    async def _stream(self, parse_stream, mock_response, mock_model_cache, mock_auth_manager):
+        events = []
+        with patch('kiro.streaming_anthropic.parse_kiro_stream', parse_stream):
+            with patch('kiro.streaming_anthropic.parse_bracket_tool_calls', return_value=[]):
+                async for event in stream_kiro_to_anthropic(
+                    mock_response, "claude-opus-5", mock_model_cache, mock_auth_manager
+                ):
+                    events.append(event)
+        return events
+
+    @staticmethod
+    def _stop_reason(events):
+        deltas = [e for e in events if "message_delta" in e]
+        assert len(deltas) == 1
+        payload = json.loads(deltas[0].split("data: ", 1)[1])
+        return payload["delta"]["stop_reason"]
+
+    @pytest.mark.asyncio
+    async def test_refusal_sets_refusal_stop_reason(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: An empty refused stream ends with stop_reason "refusal".
+        Goal: Matches the native Anthropic API, so clients like Claude Code can react.
+        """
+        events = await self._stream(self._refusal_stream(), mock_response, mock_model_cache, mock_auth_manager)
+
+        assert self._stop_reason(events) == "refusal"
+        assert any("message_stop" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_refusal_after_partial_text(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Partial text followed by a refusal still reports "refusal".
+        Goal: Already-streamed text is kept untouched; only the stop reason changes.
+        """
+        events = await self._stream(
+            self._refusal_stream(KiroEvent(type="content", content="Partial")),
+            mock_response, mock_model_cache, mock_auth_manager
+        )
+
+        assert self._stop_reason(events) == "refusal"
+        assert any("Partial" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_non_refusal_stop_reason_keeps_end_turn(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: A non-refusal upstream stop reason keeps end_turn.
+        Goal: Only known refusals alter behavior.
+        """
+        async def parse_stream(*args, **kwargs):
+            yield KiroEvent(type="content", content="Hi")
+            yield KiroEvent(type="stop", stop=UpstreamStop("END_TURN"))
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.5)
+
+        events = await self._stream(parse_stream, mock_response, mock_model_cache, mock_auth_manager)
+
+        assert self._stop_reason(events) == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_refusal(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: collect_anthropic_response reports "refusal" and logs it.
+        Goal: Anthropic non-streaming path behaves the same as streaming.
+        """
+        mock_result = StreamResult(
+            content="", context_usage_percentage=0.77,
+            stop=UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "No"),
+        )
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=mock_result), \
+             patch('kiro.streaming_anthropic.log_upstream_refusal') as mock_log:
+            result = await collect_anthropic_response(
+                mock_response, "claude-opus-5", mock_model_cache, mock_auth_manager
+            )
+
+        assert result["stop_reason"] == "refusal"
+        mock_log.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_without_stop_keeps_end_turn(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Without upstream stop metadata the stop reason is unchanged.
+        Goal: Regression guard for the default path.
+        """
+        mock_result = StreamResult(content="Hi", context_usage_percentage=0.5)
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=mock_result):
+            result = await collect_anthropic_response(
+                mock_response, "claude-opus-5", mock_model_cache, mock_auth_manager
+            )
+
+        assert result["stop_reason"] == "end_turn"
+
 
 class TestStreamingAnthropicTruncationDetection:
     """Tests for truncation detection in Anthropic streaming."""

@@ -24,7 +24,7 @@ from kiro.streaming_openai import (
     collect_stream_response,
     FirstTokenTimeoutError,
 )
-from kiro.streaming_core import KiroEvent
+from kiro.streaming_core import KiroEvent, UpstreamStop
 
 
 # ==================================================================================================
@@ -1412,6 +1412,96 @@ class TestStreamingOpenaiMeteringData:
 # ==================================================================================================
 # Tests for truncation detection
 # ==================================================================================================
+
+class TestStreamingOpenaiUpstreamRefusal:
+    """Tests for surfacing Kiro refusals (CONTENT_FILTERED) in OpenAI format."""
+
+    @staticmethod
+    def _refusal_stream(*leading_events):
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            for event in leading_events:
+                yield event
+            yield KiroEvent(type="stop", stop=UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "No"))
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.77)
+        return mock_parse_kiro_stream
+
+    async def _stream(self, parse_stream, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        chunks = []
+        with patch('kiro.streaming_openai.parse_kiro_stream', parse_stream):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                async for chunk in stream_kiro_to_openai(
+                    mock_http_client, mock_response, "claude-opus-5",
+                    mock_model_cache, mock_auth_manager
+                ):
+                    chunks.append(chunk)
+        return chunks
+
+    @pytest.mark.asyncio
+    async def test_refusal_sets_content_filter_finish_reason(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: An empty refused stream ends with finish_reason content_filter.
+        Goal: Clients can tell a refusal apart from a normal empty answer.
+        """
+        chunks = await self._stream(self._refusal_stream(), mock_http_client, mock_response, mock_model_cache, mock_auth_manager)
+
+        assert '"finish_reason": "content_filter"' in chunks[-2]
+        assert chunks[-1].strip() == "data: [DONE]"
+
+    @pytest.mark.asyncio
+    async def test_refusal_wins_over_tool_calls(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: A refusal after a partial tool call still reports content_filter.
+        Goal: The explicit upstream reason has the highest priority.
+        """
+        tool_call = KiroEvent(type="tool_use", tool_use={
+            "id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}})
+        chunks = await self._stream(self._refusal_stream(tool_call), mock_http_client, mock_response, mock_model_cache, mock_auth_manager)
+
+        assert '"finish_reason": "content_filter"' in chunks[-2]
+
+    @pytest.mark.asyncio
+    async def test_non_refusal_stop_reason_keeps_stop(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: A non-refusal upstream stop reason does not change finish_reason.
+        Goal: Only known refusals alter behavior.
+        """
+        async def parse_stream(*args, **kwargs):
+            yield KiroEvent(type="content", content="Hi")
+            yield KiroEvent(type="stop", stop=UpstreamStop("END_TURN"))
+            yield KiroEvent(type="context_usage", context_usage_percentage=0.5)
+
+        chunks = await self._stream(parse_stream, mock_http_client, mock_response, mock_model_cache, mock_auth_manager)
+
+        assert '"finish_reason": "stop"' in chunks[-2]
+
+    @pytest.mark.asyncio
+    async def test_refusal_is_logged(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: A refusal is logged via log_upstream_refusal.
+        Goal: The reason is visible in the gateway logs.
+        """
+        with patch('kiro.streaming_openai.log_upstream_refusal') as mock_log:
+            await self._stream(self._refusal_stream(), mock_http_client, mock_response, mock_model_cache, mock_auth_manager)
+
+        mock_log.assert_called_once()
+        assert mock_log.call_args[0][0].category == "REASONING_EXTRACTION"
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_refusal_sets_content_filter(self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: collect_stream_response reports content_filter for a refusal.
+        Goal: OpenAI non-streaming path behaves the same as streaming.
+        """
+        with patch('kiro.streaming_openai.parse_kiro_stream', self._refusal_stream()):
+            with patch('kiro.streaming_openai.parse_bracket_tool_calls', return_value=[]):
+                result = await collect_stream_response(
+                    mock_http_client, mock_response, "claude-opus-5",
+                    mock_model_cache, mock_auth_manager
+                )
+
+        assert result["choices"][0]["finish_reason"] == "content_filter"
+        assert result["choices"][0]["message"]["content"] == ""
+
 
 class TestStreamingOpenaiTruncationDetection:
     """Tests for truncation detection in OpenAI streaming."""

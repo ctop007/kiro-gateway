@@ -657,6 +657,134 @@ class TestAwsEventStreamParserFeed:
         assert len(events) == 1
 
 
+class TestAwsEventStreamParserStopEvent:
+    """Tests for parsing Kiro's metadataEvent (stopReason / refusal)."""
+
+    REFUSAL_JSON = (
+        b'{"stopDetails":{"refusal":{"category":"REASONING_EXTRACTION",'
+        b'"explanation":"The selected model cannot continue this conversation."}},'
+        b'"stopReason":"CONTENT_FILTERED"}'
+    )
+
+    def test_parses_refusal_with_details(self, aws_event_parser):
+        """
+        What it does: Parses a refusal metadataEvent as captured from Kiro.
+        Goal: Reason, category and explanation are all extracted.
+        """
+        events = aws_event_parser.feed(self.REFUSAL_JSON)
+
+        assert len(events) == 1
+        assert events[0]["type"] == "stop"
+        assert events[0]["data"] == {
+            "reason": "CONTENT_FILTERED",
+            "category": "REASONING_EXTRACTION",
+            "explanation": "The selected model cannot continue this conversation.",
+        }
+
+    def test_parses_when_stop_reason_key_comes_first(self, aws_event_parser):
+        """
+        What it does: Parses the event with stopReason as the first key.
+        Goal: JSON key order is not guaranteed by upstream.
+        """
+        events = aws_event_parser.feed(
+            b'{"stopReason":"CONTENT_FILTERED","stopDetails":{"refusal":{"category":"X"}}}'
+        )
+
+        assert len(events) == 1
+        assert events[0]["data"]["reason"] == "CONTENT_FILTERED"
+        assert events[0]["data"]["category"] == "X"
+        assert events[0]["data"]["explanation"] is None
+
+    def test_parses_stop_reason_without_details(self, aws_event_parser):
+        """
+        What it does: Parses a bare stopReason.
+        Goal: Missing stopDetails yields None category/explanation, not an error.
+        """
+        events = aws_event_parser.feed(b'{"stopReason":"END_TURN"}')
+
+        assert events == [{"type": "stop", "data": {"reason": "END_TURN", "category": None, "explanation": None}}]
+
+    @pytest.mark.parametrize("chunk", [
+        b'{"stopDetails":{"refusal":{"category":"X"}}}',
+        b'{"stopReason":null}',
+        b'{"stopReason":""}',
+        b'{"stopReason":42}',
+    ])
+    def test_ignores_event_without_usable_stop_reason(self, aws_event_parser, chunk):
+        """
+        What it does: Drops metadata events without a string stopReason.
+        Goal: Malformed metadata never produces a bogus stop event.
+        """
+        assert aws_event_parser.feed(chunk) == []
+
+    @pytest.mark.parametrize("chunk", [
+        b'{"stopReason":"CONTENT_FILTERED","stopDetails":"oops"}',
+        b'{"stopReason":"CONTENT_FILTERED","stopDetails":{"refusal":"oops"}}',
+        b'{"stopReason":"CONTENT_FILTERED","stopDetails":{"refusal":{"category":1,"explanation":["x"]}}}',
+    ])
+    def test_malformed_details_keep_the_reason(self, aws_event_parser, chunk):
+        """
+        What it does: Tolerates wrongly-typed stopDetails fields.
+        Goal: The refusal is still reported even if its details are malformed.
+        """
+        events = aws_event_parser.feed(chunk)
+
+        assert len(events) == 1
+        assert events[0]["data"] == {"reason": "CONTENT_FILTERED", "category": None, "explanation": None}
+
+    def test_parses_event_inside_binary_framing(self, aws_event_parser):
+        """
+        What it does: Parses the event surrounded by AWS event-stream headers.
+        Goal: Matches the real wire format, followed by contextUsageEvent.
+        """
+        chunk = (
+            b'\x00\x00\x01\x9b\x00\x00\x00\x5b:event-type\x07\x00\x0dmetadataEvent'
+            b'\r:content-type\x07\x00\x10application/json\r:message-type\x07\x00\x05event'
+            + self.REFUSAL_JSON +
+            b'\xab\xcd\x00\x00\x00\x50:event-type\x07\x00\x11contextUsageEvent'
+            b'{"contextUsagePercentage":0.77}'
+        )
+
+        events = aws_event_parser.feed(chunk)
+
+        assert [e["type"] for e in events] == ["stop", "context_usage"]
+        assert events[0]["data"]["reason"] == "CONTENT_FILTERED"
+
+    def test_event_split_across_chunks(self, aws_event_parser):
+        """
+        What it does: Feeds the event in two halves.
+        Goal: The event is emitted once, after it is complete.
+        """
+        half = len(self.REFUSAL_JSON) // 2
+
+        assert aws_event_parser.feed(self.REFUSAL_JSON[:half]) == []
+        events = aws_event_parser.feed(self.REFUSAL_JSON[half:])
+
+        assert len(events) == 1
+        assert events[0]["type"] == "stop"
+
+    def test_does_not_shadow_tool_stop_event(self, aws_event_parser):
+        """
+        What it does: Checks that tool {"stop": true} still parses as tool_stop.
+        Goal: The new stop patterns must not collide with the tool stop pattern.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1"}')
+        aws_event_parser.feed(b'{"input":"{}"}')
+        events = aws_event_parser.feed(b'{"stop":true}')
+
+        assert all(e["type"] != "stop" for e in events)
+        assert len(aws_event_parser.get_tool_calls()) == 1
+
+    def test_text_mentioning_stop_reason_is_not_an_event(self, aws_event_parser):
+        """
+        What it does: Streams content whose text contains a stopReason-like JSON string.
+        Goal: Content is matched first, so the model's own text is not misread as metadata.
+        """
+        events = aws_event_parser.feed(b'{"content":"use {\\"stopReason\\": 1} here"}')
+
+        assert [e["type"] for e in events] == ["content"]
+
+
 class TestAwsEventStreamParserToolCalls:
     """Tests for tool calls parsing."""
     

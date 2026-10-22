@@ -54,6 +54,9 @@ from kiro.streaming_core import (
     KiroEvent,
     calculate_tokens_from_context_usage,
     tool_calls_to_countable_text,
+    log_upstream_refusal,
+    UpstreamStop,
+    OPENAI_REFUSAL_FINISH_REASON,
     stream_with_first_token_retry as stream_with_first_token_retry_core,
     with_keepalive,
 )
@@ -131,6 +134,7 @@ async def stream_kiro_to_openai_internal(
     credits_used = 0.0
     upstream_calls = 0
     context_usage_percentage = None
+    upstream_stop: Optional[UpstreamStop] = None
     full_content = ""
     full_thinking_content = ""  # Accumulated thinking content for non-streaming
     
@@ -283,6 +287,9 @@ async def stream_kiro_to_openai_internal(
 
             elif event.type == "context_usage" and event.context_usage_percentage is not None:
                 context_usage_percentage = event.context_usage_percentage
+
+            elif event.type == "stop" and event.stop:
+                upstream_stop = event.stop
         
         # Credits actually billed upstream. req= is the dedup key for log-based
         # reconciliation, so keep it in the line.
@@ -316,8 +323,12 @@ async def stream_kiro_to_openai_internal(
                 f"{'Model will be notified automatically about truncation.' if TRUNCATION_RECOVERY else 'Set TRUNCATION_RECOVERY=true in .env to auto-notify model about truncation.'}"
             )
         
-        # Determine finish_reason (truncation has highest priority)
-        if content_was_truncated:
+        # Determine finish_reason. An explicit upstream refusal wins: it explains
+        # an otherwise empty response, which would look like a normal "stop".
+        if upstream_stop and upstream_stop.is_refusal:
+            log_upstream_refusal(upstream_stop, model, completion_id)
+            finish_reason = OPENAI_REFUSAL_FINISH_REASON
+        elif content_was_truncated:
             finish_reason = "length"
         elif all_tool_calls:
             finish_reason = "tool_calls"

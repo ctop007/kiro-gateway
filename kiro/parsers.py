@@ -248,6 +248,9 @@ class AwsEventStreamParser:
         ('{"usage":', 'usage'),
         ('{"unit":', 'metering'),
         ('{"contextUsagePercentage":', 'context_usage'),
+        # metadataEvent: key order is not guaranteed, so match either leading key
+        ('{"stopDetails":', 'stop'),
+        ('{"stopReason":', 'stop'),
     ]
     
     def __init__(self):
@@ -332,8 +335,50 @@ class AwsEventStreamParser:
             return self._process_metering_event(data)
         elif event_type == 'context_usage':
             return {"type": "context_usage", "data": data.get('contextUsagePercentage', 0)}
+        elif event_type == 'stop':
+            return self._process_stop_event(data)
         
         return None
+
+    def _process_stop_event(self, data: dict) -> Optional[Dict[str, Any]]:
+        """
+        Processes the upstream stop metadata event.
+
+        Wire format (metadataEvent):
+            {"stopDetails":{"refusal":{"category":"REASONING_EXTRACTION",
+                                       "explanation":"..."}},
+             "stopReason":"CONTENT_FILTERED"}
+
+        Kiro sends this when it ends a response for its own reasons (e.g. a
+        model refusal). Without it the client only sees an empty response.
+
+        Args:
+            data: Parsed metadataEvent JSON
+
+        Returns:
+            {"type": "stop", "data": {"reason", "category", "explanation"}},
+            or None if the event carries no usable stop reason
+        """
+        reason = data.get('stopReason')
+        if not isinstance(reason, str) or not reason:
+            logger.debug(f"Stop metadata event without stopReason ignored: {str(data)[:200]}")
+            return None
+
+        details = data.get('stopDetails')
+        refusal = details.get('refusal') if isinstance(details, dict) else None
+        if not isinstance(refusal, dict):
+            refusal = {}
+
+        category = refusal.get('category')
+        explanation = refusal.get('explanation')
+        return {
+            "type": "stop",
+            "data": {
+                "reason": reason,
+                "category": category if isinstance(category, str) else None,
+                "explanation": explanation if isinstance(explanation, str) else None,
+            },
+        }
     
     def _process_metering_event(self, data: dict) -> Optional[Dict[str, Any]]:
         """

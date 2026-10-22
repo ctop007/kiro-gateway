@@ -27,6 +27,8 @@ from kiro.streaming_core import (
     collect_stream_to_result,
     calculate_tokens_from_context_usage,
     tool_calls_to_countable_text,
+    UpstreamStop,
+    log_upstream_refusal,
     stream_with_first_token_retry,
     with_keepalive,
     _process_chunk,
@@ -683,6 +685,106 @@ class TestProcessChunk:
 # ==================================================================================================
 # Tests for collect_stream_to_result()
 # ==================================================================================================
+
+class TestUpstreamStop:
+    """Tests for UpstreamStop, log_upstream_refusal and stop event plumbing."""
+
+    def test_content_filtered_is_refusal(self):
+        """
+        What it does: CONTENT_FILTERED is classified as a refusal.
+        Goal: This is the reason Kiro uses for model refusals.
+        """
+        assert UpstreamStop(reason="CONTENT_FILTERED").is_refusal is True
+
+    @pytest.mark.parametrize("reason", ["END_TURN", "MAX_TOKENS", "content_filtered", ""])
+    def test_other_reasons_are_not_refusals(self, reason):
+        """
+        What it does: Other stop reasons (and different casing) are not refusals.
+        Goal: Unknown reasons keep the existing stop_reason logic unchanged.
+        """
+        assert UpstreamStop(reason=reason).is_refusal is False
+
+    def test_log_includes_fake_reasoning_hint_for_reasoning_extraction(self):
+        """
+        What it does: Logs an actionable hint for REASONING_EXTRACTION refusals.
+        Goal: Users learn that FAKE_REASONING=false fixes the empty response.
+        """
+        stop = UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", "Cannot continue")
+        with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', True), \
+             patch('kiro.streaming_core.logger') as mock_logger:
+            log_upstream_refusal(stop, "claude-opus-5", "req-1")
+
+        message = mock_logger.warning.call_args[0][0]
+        assert "FAKE_REASONING=false" in message
+        assert "Cannot continue" in message
+        assert "req-1" in message and "claude-opus-5" in message
+
+    def test_log_has_no_hint_when_fake_reasoning_disabled(self):
+        """
+        What it does: Omits the FAKE_REASONING hint when it is already off.
+        Goal: Never suggest a setting that is already applied.
+        """
+        stop = UpstreamStop("CONTENT_FILTERED", "REASONING_EXTRACTION", None)
+        with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', False), \
+             patch('kiro.streaming_core.logger') as mock_logger:
+            log_upstream_refusal(stop, "m", "r")
+
+        message = mock_logger.warning.call_args[0][0]
+        assert "FAKE_REASONING" not in message
+        assert "no explanation provided" in message
+
+    def test_log_has_no_hint_for_other_categories(self):
+        """
+        What it does: Omits the hint for refusal categories unrelated to fake reasoning.
+        Goal: Hints must be accurate, not generic.
+        """
+        stop = UpstreamStop("CONTENT_FILTERED", "SOMETHING_ELSE", "x")
+        with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', True), \
+             patch('kiro.streaming_core.logger') as mock_logger:
+            log_upstream_refusal(stop, "m", "r")
+
+        assert "FAKE_REASONING" not in mock_logger.warning.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_process_chunk_converts_stop_event(self, mock_parser):
+        """
+        What it does: _process_chunk turns a parser stop event into a KiroEvent.
+        Goal: The stop metadata reaches the streaming layers.
+        """
+        mock_parser.feed.return_value = [{"type": "stop", "data": {
+            "reason": "CONTENT_FILTERED", "category": "C", "explanation": "E"}}]
+
+        events = [e async for e in _process_chunk(mock_parser, b'chunk', None)]
+
+        assert len(events) == 1
+        assert events[0].type == "stop"
+        assert events[0].stop == UpstreamStop("CONTENT_FILTERED", "C", "E")
+
+    @pytest.mark.asyncio
+    async def test_collect_stream_to_result_keeps_stop(self, mock_response, mock_parser):
+        """
+        What it does: collect_stream_to_result stores the upstream stop.
+        Goal: Non-streaming paths can report the refusal.
+        """
+        mock_parser.feed.return_value = [
+            {"type": "stop", "data": {"reason": "CONTENT_FILTERED", "category": None, "explanation": None}},
+            {"type": "context_usage", "data": 0.5},
+        ]
+        mock_parser.get_tool_calls.return_value = []
+
+        async def mock_aiter_bytes():
+            yield b'chunk1'
+
+        mock_response.aiter_bytes = mock_aiter_bytes
+
+        with patch('kiro.streaming_core.AwsEventStreamParser', return_value=mock_parser):
+            with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', False):
+                with patch('kiro.streaming_core.parse_bracket_tool_calls', return_value=[]):
+                    result = await collect_stream_to_result(mock_response, first_token_timeout=30)
+
+        assert result.stop is not None and result.stop.is_refusal
+        assert result.content == ""
+
 
 class TestCollectStreamToResult:
     """Tests for collect_stream_to_result() function."""

@@ -63,6 +63,61 @@ except ImportError:
 # Data Classes
 # ==================================================================================================
 
+# Kiro stopReason values that mean the model refused to answer
+KIRO_REFUSAL_STOP_REASONS = frozenset({"CONTENT_FILTERED"})
+
+# Refusal category Kiro uses when a model rejects the fake reasoning instructions
+KIRO_REASONING_EXTRACTION_CATEGORY = "REASONING_EXTRACTION"
+
+ANTHROPIC_REFUSAL_STOP_REASON = "refusal"
+OPENAI_REFUSAL_FINISH_REASON = "content_filter"
+
+
+@dataclass
+class UpstreamStop:
+    """
+    Stop metadata sent by Kiro (metadataEvent).
+
+    Attributes:
+        reason: Raw Kiro stopReason (e.g. "CONTENT_FILTERED")
+        category: Refusal category (e.g. "REASONING_EXTRACTION"), if any
+        explanation: Human-readable refusal explanation from Kiro, if any
+    """
+    reason: str
+    category: Optional[str] = None
+    explanation: Optional[str] = None
+
+    @property
+    def is_refusal(self) -> bool:
+        """Whether Kiro ended the response because the model refused."""
+        return self.reason in KIRO_REFUSAL_STOP_REASONS
+
+
+def log_upstream_refusal(stop: UpstreamStop, model: str, request_id: str) -> None:
+    """
+    Log a model refusal with an actionable hint.
+
+    Kiro returns refusals as an otherwise empty, successful response, so this
+    log line is often the only place a user can see why nothing came back.
+
+    Args:
+        stop: Upstream stop metadata with is_refusal == True
+        model: Model name as requested by the client
+        request_id: Response ID, for correlating with other log lines
+    """
+    hint = ""
+    if stop.category == KIRO_REASONING_EXTRACTION_CATEGORY and FAKE_REASONING_ENABLED:
+        hint = (
+            " This model rejects the gateway's fake reasoning instructions; "
+            "set FAKE_REASONING=false in .env or use a different model."
+        )
+    logger.warning(
+        f"Model refused to respond (req={request_id}, model={model}, "
+        f"stopReason={stop.reason}, category={stop.category}): "
+        f"{stop.explanation or 'no explanation provided'}.{hint}"
+    )
+
+
 @dataclass
 class KiroEvent:
     """
@@ -78,6 +133,7 @@ class KiroEvent:
         usage: Cache token usage data (for usage events)
         credits: Credits billed by upstream (for metering events)
         context_usage_percentage: Context usage percentage (for context_usage events)
+        stop: Upstream stop metadata (for stop events), see UpstreamStop
         is_first_thinking_chunk: Whether this is the first thinking chunk
         is_last_thinking_chunk: Whether this is the last thinking chunk
     """
@@ -88,6 +144,7 @@ class KiroEvent:
     usage: Optional[Dict[str, Any]] = None
     credits: Optional[float] = None
     context_usage_percentage: Optional[float] = None
+    stop: Optional["UpstreamStop"] = None
     is_first_thinking_chunk: bool = False
     is_last_thinking_chunk: bool = False
 
@@ -105,6 +162,7 @@ class StreamResult:
         credits: Total credits billed by upstream (summed over all metering events)
         upstream_calls: Number of metering events seen (>1 when tools trigger extra upstream calls)
         context_usage_percentage: Context usage percentage from Kiro API
+        stop: Upstream stop metadata, if Kiro sent one
     """
     content: str = ""
     thinking_content: str = ""
@@ -113,6 +171,7 @@ class StreamResult:
     credits: float = 0.0
     upstream_calls: int = 0
     context_usage_percentage: Optional[float] = None
+    stop: Optional["UpstreamStop"] = None
 
 
 class FirstTokenTimeoutError(Exception):
@@ -293,6 +352,9 @@ async def _process_chunk(
         elif event["type"] == "context_usage":
             yield KiroEvent(type="context_usage", context_usage_percentage=event["data"])
 
+        elif event["type"] == "stop":
+            yield KiroEvent(type="stop", stop=UpstreamStop(**event["data"]))
+
 
 # ==================================================================================================
 # Full Response Collection
@@ -338,6 +400,8 @@ async def collect_stream_to_result(
             result.upstream_calls += 1
         elif event.type == "context_usage" and event.context_usage_percentage is not None:
             result.context_usage_percentage = event.context_usage_percentage
+        elif event.type == "stop" and event.stop:
+            result.stop = event.stop
     
     # Check for bracket-style tool calls in full content
     bracket_tool_calls = parse_bracket_tool_calls(full_content_for_bracket_tools)
