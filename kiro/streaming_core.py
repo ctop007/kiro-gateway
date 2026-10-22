@@ -31,6 +31,7 @@ to convert Kiro events to their respective SSE formats.
 """
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Awaitable, Dict, List, Optional, Tuple
 
@@ -349,6 +350,47 @@ async def collect_stream_to_result(
 # ==================================================================================================
 # Token Counting Utilities
 # ==================================================================================================
+
+def tool_calls_to_countable_text(tool_calls: List[Dict[str, Any]]) -> str:
+    """
+    Flatten tool calls into text so their output tokens can be counted.
+
+    Tool calls are model output just like text, so they must be included in
+    completion/output token counts. Accepts both shapes used in the gateway:
+    OpenAI-style ``{"function": {"name", "arguments"}}`` and Anthropic-style
+    ``{"name", "input"}``. Missing or None fields are treated as empty, because
+    malformed upstream tool calls must never break usage reporting.
+
+    Args:
+        tool_calls: Tool calls in OpenAI or Anthropic format
+
+    Returns:
+        Concatenated tool names and arguments, or "" if there is nothing to count
+
+    Examples:
+        >>> tool_calls_to_countable_text([{"function": {"name": "f", "arguments": "{}"}}])
+        'f{}'
+        >>> tool_calls_to_countable_text([{"name": "f", "input": {"a": 1}}])
+        'f{"a": 1}'
+    """
+    parts: List[str] = []
+    for tool_call in tool_calls or []:
+        if not isinstance(tool_call, dict):
+            continue
+        if "function" in tool_call:
+            function = tool_call.get("function") or {}
+            name = function.get("name") if isinstance(function, dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+        else:
+            name = tool_call.get("name")
+            arguments = tool_call.get("input")
+        parts.append(name if isinstance(name, str) else "")
+        if isinstance(arguments, str):
+            parts.append(arguments)
+        elif arguments is not None:
+            parts.append(json.dumps(arguments, ensure_ascii=False))
+    return "".join(parts)
+
 
 def calculate_tokens_from_context_usage(
     context_usage_percentage: Optional[float],

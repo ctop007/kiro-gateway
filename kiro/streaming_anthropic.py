@@ -45,6 +45,7 @@ from kiro.streaming_core import (
     FirstTokenTimeoutError,
     KiroEvent,
     calculate_tokens_from_context_usage,
+    tool_calls_to_countable_text,
     stream_with_first_token_retry,
     with_keepalive,
 )
@@ -643,10 +644,7 @@ async def stream_kiro_to_anthropic(
             )
         
         # Calculate output tokens (include tool_use block content)
-        tool_content = ""
-        for tb in tool_blocks:
-            tool_content += json.dumps(tb.get("input", {}), ensure_ascii=False)
-            tool_content += tb.get("name", "")
+        tool_content = tool_calls_to_countable_text(tool_blocks)
         output_tokens = count_tokens(full_content + full_thinking_content + tool_content)
         
         # Calculate total tokens from context usage if available
@@ -835,11 +833,7 @@ async def collect_anthropic_response(
         })
     
     # Calculate output tokens (include tool_use block content)
-    tool_content = ""
-    for tc in result.tool_calls:
-        func = tc.get("function", {})
-        tool_content += func.get("name", "")
-        tool_content += func.get("arguments", "")
+    tool_content = tool_calls_to_countable_text(result.tool_calls)
     output_tokens = count_tokens(result.content + result.thinking_content + tool_content)
     
     # Calculate from context usage if available

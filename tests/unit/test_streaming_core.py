@@ -26,6 +26,7 @@ from kiro.streaming_core import (
     parse_kiro_stream,
     collect_stream_to_result,
     calculate_tokens_from_context_usage,
+    tool_calls_to_countable_text,
     stream_with_first_token_retry,
     with_keepalive,
     _process_chunk,
@@ -877,6 +878,93 @@ class TestCollectStreamToResult:
         print(f"Collected tool calls: {len(result.tool_calls)}")
         assert len(result.tool_calls) == 2
         print("✓ Tool calls deduplicated correctly")
+
+
+# ==================================================================================================
+# Tests for tool_calls_to_countable_text()
+# ==================================================================================================
+
+class TestToolCallsToCountableText:
+    """Tests for tool_calls_to_countable_text() used in output token counting."""
+
+    def test_openai_format_concatenates_name_and_arguments(self):
+        """
+        What it does: Flattens an OpenAI-style tool call.
+        Purpose: Ensure tool call output is counted as completion tokens.
+        """
+        tool_calls = [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}}]
+        assert tool_calls_to_countable_text(tool_calls) == 'get_weather{"city": "Paris"}'
+
+    def test_anthropic_format_serializes_dict_input(self):
+        """
+        What it does: Flattens an Anthropic-style tool_use block with dict input.
+        Purpose: Ensure the streaming Anthropic path counts tool input.
+        """
+        tool_blocks = [{"type": "tool_use", "id": "t1", "name": "write", "input": {"path": "a.py"}}]
+        assert tool_calls_to_countable_text(tool_blocks) == 'write{"path": "a.py"}'
+
+    def test_non_ascii_input_is_not_escaped(self):
+        """
+        What it does: Serializes Unicode input without \\u escapes.
+        Purpose: Escaped Unicode would inflate the token count several times over.
+        """
+        result = tool_calls_to_countable_text([{"name": "say", "input": {"text": "привет 你好"}}])
+        assert "привет 你好" in result
+
+    def test_multiple_tool_calls_are_all_included(self):
+        """
+        What it does: Concatenates several tool calls in order.
+        Purpose: Ensure parallel tool calls are all counted.
+        """
+        tool_calls = [
+            {"function": {"name": "a", "arguments": "1"}},
+            {"function": {"name": "b", "arguments": "2"}},
+        ]
+        assert tool_calls_to_countable_text(tool_calls) == "a1b2"
+
+    @pytest.mark.parametrize("tool_calls", [[], None])
+    def test_empty_or_none_returns_empty_string(self, tool_calls):
+        """
+        What it does: Handles responses without tool calls.
+        Purpose: Plain text responses must not change their token count.
+        """
+        assert tool_calls_to_countable_text(tool_calls) == ""
+
+    @pytest.mark.parametrize("tool_call", [
+        {"function": {"name": None, "arguments": "{}"}},
+        {"function": {"name": "f", "arguments": None}},
+        {"function": None},
+        {"function": "not-a-dict"},
+        {"name": None, "input": None},
+        {},
+    ])
+    def test_none_and_malformed_fields_do_not_raise(self, tool_call):
+        """
+        What it does: Tolerates None and malformed fields from upstream.
+        Purpose: Usage reporting must never crash the response (regression for PR #149).
+        """
+        assert isinstance(tool_calls_to_countable_text([tool_call]), str)
+
+    def test_none_name_keeps_arguments(self):
+        """
+        What it does: Keeps arguments when the name is None.
+        Purpose: Partial data is still counted rather than discarded.
+        """
+        assert tool_calls_to_countable_text([{"function": {"name": None, "arguments": "xyz"}}]) == "xyz"
+
+    def test_non_dict_entries_are_skipped(self):
+        """
+        What it does: Skips entries that are not dicts.
+        Purpose: Defensive against unexpected list contents.
+        """
+        assert tool_calls_to_countable_text(["junk", None, {"name": "ok", "input": {}}]) == "ok{}"
+
+    def test_string_input_is_used_verbatim(self):
+        """
+        What it does: Uses string input as-is instead of JSON-encoding it again.
+        Purpose: Avoid counting extra quotes and escapes.
+        """
+        assert tool_calls_to_countable_text([{"name": "f", "input": '{"a":1}'}]) == 'f{"a":1}'
 
 
 # ==================================================================================================

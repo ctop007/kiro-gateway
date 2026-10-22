@@ -53,6 +53,7 @@ from kiro.streaming_core import (
     FirstTokenTimeoutError,
     KiroEvent,
     calculate_tokens_from_context_usage,
+    tool_calls_to_countable_text,
     stream_with_first_token_retry as stream_with_first_token_retry_core,
     with_keepalive,
 )
@@ -324,11 +325,7 @@ async def stream_kiro_to_openai_internal(
             finish_reason = "stop"
         
         # Count completion_tokens (output) using tiktoken (include tool_use content)
-        tool_content = ""
-        for tc in all_tool_calls:
-            func = tc.get("function", {})
-            tool_content += func.get("name", "")
-            tool_content += func.get("arguments", "")
+        tool_content = tool_calls_to_countable_text(all_tool_calls)
         completion_tokens = count_tokens(full_content + full_thinking_content + tool_content)
         
         # Calculate total_tokens based on context_usage_percentage from Kiro API
