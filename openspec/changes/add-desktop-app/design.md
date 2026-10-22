@@ -28,7 +28,7 @@
 
 **Non-Goals：**
 
-- 第一版不做应用内自动升级（updater）和签名公证。先出能用的包，自用和组内试用够了。updater 要签名私钥和发布通道，放到后续 change 再做。
+- 第一版不做 Apple 签名公证与 Windows Authenticode 签名（同事首次安装要手动放行一次，见 README）。应用内静默升级和强制升级第一版就做，见决策 11。
 - 不做 Linux 包。
 - 不在 App 里替用户执行 `kiro-cli login`。登录需要浏览器交互，App 只给命令和复制按钮。
 - 不显示请求和回复的内容。
@@ -161,6 +161,38 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
   - `desktop/AGENTS.md`：桌面端规则。
 - Windows 包只能在 Windows 上构建。第一版先在 macOS 本机出 dmg。Windows 包等 CI 或 Windows 机器再出，tasks 里单独列一项。
 
+### 11. 应用内升级：COS 上的静态清单 + Tauri updater 签名包
+
+- 发布物全部放腾讯云 COS（公共读）：
+  - 版本清单 `kiro-gateway/desktop/latest.json`
+  - mac 更新包 `Kiro-Gateway.app.tar.gz` 与 `.sig`、dmg（首次安装用）
+  - Windows NSIS 安装器 `*-setup.exe` 与 `.sig`（Windows 的更新包就是安装器本身）
+- 清单格式在 Tauri updater 的 static JSON 基础上加一个 `minRequiredVersion`：
+  ```json
+  {
+    "version": "0.0.2",
+    "minRequiredVersion": "0.0.1",
+    "notes": "一行一条的更新说明",
+    "pub_date": "2026-11-01T10:00:00+08:00",
+    "platforms": {
+      "darwin-aarch64": { "url": "https://<bucket>.cos.<region>.myqcloud.com/kiro-gateway/desktop/0.0.2/Kiro-Gateway.app.tar.gz", "signature": "<.sig 内容>" },
+      "darwin-x86_64":  { "url": "...", "signature": "..." },
+      "windows-x86_64": { "url": ".../Kiro-Gateway_0.0.2_x64-setup.exe", "signature": "..." }
+    }
+  }
+  ```
+- 决定动作的纯函数 `decide_update(current, manifest, platform)`，结果三选一：
+  - `none`：没有更新的版本，或清单不可用。
+  - `background`：有新版本，当前版本不低于 `minRequiredVersion`。
+  - `forced`：当前版本低于 `minRequiredVersion`。
+  - 版本号按 `x.y.z` 数字逐段比较，任何一方解析失败都算 `none`，宁可不升也不误升。
+- 检查放在 Rust 定时器里：启动时查一次，之后每 60 分钟查一次。窗口隐藏后 webview 会被挂起，JS 定时器会停，参考项目 也是因为这个原因把检查放在 Rust。用 `tauri-plugin-updater` 的 `check()` 读清单，`download()` 下载并校验 minisign 签名。
+- `background`：下载到 updater 的缓存后先不安装，在 App 数据目录记一个 `pending-update.json`。下次启动时先安装再进主界面，用户也可以在状态栏或托盘点「立即重启」。安装前先停网关，重启后按 `config.json` 里记的开关状态恢复。
+- `forced`：立即停网关，Rust 侧置 `upgrade_required` 标志（开关和托盘的启动命令都直接拒绝，`config.json` 写入 `upgradeRequired: true` 让 kclaude 脚本给出升级提示），前端显示不可关闭的升级遮罩，下载并安装完成后 `restart()`。下载失败时遮罩上显示「重试」和 dmg / exe 的直链，不回退到可用界面。
+- 签名私钥：minisign 私钥只存在维护者本机（比如 `~/.kiro-gateway/desktop-updater.key`）和 CI Secret 里，公钥写进 `tauri.conf.json`。私钥丢了，就再也发不出能被旧版接受的更新。
+- 发布：用 `desktop/scripts/release.sh VERSION=x.y.z NOTES=notes.md [FORCE=1]` 出包、签名、上传 COS，最后才覆盖 `latest.json`。上传顺序保证清单永远不会指向还没传完的文件。`FORCE=1` 时把 `minRequiredVersion` 设为本次版本。上传用 `coscli`，凭证从本机配置或环境变量读取，不进仓库。
+- 被否决的方案：参考项目 的后端发布通道。这个项目没有后端，COS 静态文件已经够用，而且 Tauri updater 原生就支持 static JSON。
+
 ## Risks / Trade-offs
 
 - [PyInstaller 漏收动态导入的模块，比如 uvicorn 的 `uvicorn.protocols.*`、`uvicorn.loops.*`] → 构建脚本显式加上 `--collect-submodules uvicorn` 并指定 hidden-import。构建完成后自动做冒烟测试：起 sidecar，打 `/health` 和 `/v1/models`（这一步用 mock 的 Kiro 环境变量，不联网）。
@@ -168,7 +200,8 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 - [Windows 杀毒软件误报 PyInstaller 产物] → onedir 比 onefile 好一些，但仍可能误报。在 README 里写明处理办法。签名放到后续 change。
 - [网关 `[Credit]` 计费和 record 写入路径出现分叉] → record 的 credits 和 `[Credit]` 日志在同一位置、读同一个变量。测试断言两者相等。
 - [两个网关同时刷新 kiro-cli token：桌面端 sidecar 和用户手动起的 8000 网关] → 端口冲突时不启动，降低同时运行的概率。token 写回本来就是现有行为，这次不改。
-- [未签名的 dmg 在同事机器上被 Gatekeeper 拦截] → 第一版在 README 里写 `xattr -dr com.apple.quarantine` 的操作说明，签名公证放到后续 change。
+- [未签名的 dmg 在同事机器上被 Gatekeeper 拦截] → 第一版在 README 里写 `xattr -dr com.apple.quarantine` 的操作说明，签名公证放到后续 change。updater 替换 .app 时不会重新打上 quarantine，所以只有首次安装需要这一步。
+- [发错清单导致全员强制升级到坏版本] → `release.sh` 在 `FORCE=1` 时要求二次确认。清单覆盖前先上传新包，并用 HEAD 请求校验 URL 可访问。回滚的办法是发一个版本号更高的修复版，Tauri updater 不支持降级。
 
 ## 事前验尸
 
@@ -199,7 +232,12 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
    - 后果：用户只能重启电脑，或者自己去 `lsof`。
    - 防法：pid 文件加可执行文件路径校验，识别出是自己遗留的就回收（决策 8）。识别不出时，界面给出"改用其他端口"的出路，并显示占用端口的进程名。测试覆盖 pid 文件存在且进程存活、pid 被别的进程复用、pid 文件损坏三种情况。
 
-6. **访问密钥或 token 泄露到日志或界面。**
+6. **强制升级把所有人卡在遮罩里。**
+   - 怎么出事：清单里 `minRequiredVersion` 写高了，或者新包的 URL 404，或者签名不对，所有旧版打开都在遮罩上反复下载失败。
+   - 后果：全组都用不了 kclaude。
+   - 防法：`release.sh` 上传后先 HEAD 校验每个平台的 URL 和 `.sig`，再覆盖清单。强制发布时二次确认。遮罩上始终提供安装包直链，即使 updater 失败，用户也能手动装新版。测试覆盖 `decide_update` 的各种边界：版本相等、低于最低版本、缺少平台、版本号格式错，以及下载失败时遮罩给出的出路。
+
+7. **访问密钥或 token 泄露到日志或界面。**
    - 怎么出事：意外退出时把 `gateway.log` 的尾部直接显示出来，里面可能有调试信息。或者请求日志的 error 字段带出了上游回显的内容。
    - 后果：凭证泄露。虽然只影响本机，但同事截图发群里的风险是真实存在的。
    - 防法：日志摘要显示前先过滤掉疑似 token 的长串（≥ 32 位的 base64/hex），并且不显示 `PROXY_API_KEY`。网关的请求记录里 error 字段只取已整理过的错误信息，截到 200 字符。测试用含假 token 的日志行和错误信息验证过滤生效。

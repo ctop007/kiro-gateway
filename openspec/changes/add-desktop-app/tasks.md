@@ -15,8 +15,8 @@
 
 ## 2. 桌面端工程骨架
 
-- [ ] 2.1 安装 Rust 工具链（rustup stable，加 `aarch64-apple-darwin` 与 `x86_64-apple-darwin` target），先征得用户同意；验证：`cargo --version`、`rustup target list --installed`
-- [ ] 2.2 创建 `desktop/`：Tauri 2 + Vite + React 18 + TS + Vitest，productName "Kiro Gateway"，identifier `dev.kirogateway.desktop`，单窗口，CSP 只放 `ipc:`；只注册 single-instance（第一个）、opener、clipboard-manager、autostart 四个插件；托盘带占位图标；capabilities 不开放 fs/shell；验证：`cd desktop && pnpm tauri dev` 能出窗口，`cargo test` 和 `pnpm test` 能跑空用例
+- [ ] 2.1 确认 Rust 工具链（本机已有 `~/.cargo/bin`，1.99，未在 PATH；补 `x86_64-apple-darwin` target 以便出 universal 包）；验证：`cargo --version`、`rustup target list --installed`
+- [ ] 2.2 创建 `desktop/`：Tauri 2 + Vite + React 18 + TS + Vitest，productName "Kiro Gateway"，identifier `dev.kirogateway.desktop`，版本 0.0.1，单窗口，CSP 只放 `ipc:`；只注册 single-instance（第一个）、opener、clipboard-manager、autostart、updater、process 六个插件；托盘带占位图标；capabilities 不开放 fs/shell；验证：`cd desktop && pnpm tauri dev` 能出窗口，`cargo test` 和 `pnpm test` 能跑空用例
 - [ ] 2.3 写 `desktop/AGENTS.md`（技术栈边界、写盘范围、进程规则、文案原则、命令）和 `desktop/Makefile`（dev / test / check / sidecar / dmg-local / help），`.gitignore` 加上 `desktop/src-tauri/resources/gateway/`、`target/`、`node_modules/`、`dist/`；验证：`make help` 列出全部目标
 
 ## 3. 网关 sidecar 打包
@@ -59,14 +59,25 @@
 - [ ] 7.3 清理与清空：启动时删除早于上上个月的文件；「清空日志」删除全部文件并重置偏移；验证：`cargo test request_log::retention`
 - [ ] 7.4 前端日志页：汇总卡片（标注 credits）、按模型分组、倒序列表（本机时区时间）、筛选（仅失败 / 模型，汇总不受筛选影响）、失败展开和常见错误建议（402 / 上下文超长 / 401·403 / 拒答）、空状态、清空确认；有新记录时由 event 推送；验证：`pnpm test` 覆盖错误 → 建议映射、筛选、时间格式化
 
-## 8. 集成验收
+## 8. 桌面端：应用内升级（desktop/app-update）
 
-- [ ] 8.1 macOS 本机出包：`make sidecar && make dmg-local`，安装 dmg 后在你的机器上走一遍：环境检测全部通过 → 打开开关 → 新开终端运行 `kclaude -p "hi"`（用 haiku）→ 日志页 3 秒内出现记录，credits 与 `gateway.log` 里的 `[Credit]` 一致 → 关闭窗口后 kclaude 仍可用 → 托盘退出后没有遗留进程 → `claude` 本身不受影响；全程截图
-- [ ] 8.2 在临时 HOME 下（`HOME=$(mktemp -d)`）跑一遍首次安装流程，确认没有 kiro-cli 登录时的提示和禁用开关的行为正确，并且不碰你真实的 `~/.zshrc`
-- [ ] 8.3 Windows 实机（或 CI windows runner）：跑 `build-sidecar.ps1`、出 NSIS 包、确认 kiro-cli 数据库路径并更新候选列表、走一遍 8.1 的流程；没有条件时把这一项标为阻塞，并在 README 待办里写明
-- [ ] 8.4 对抗式审查（大功能）：按模块派独立审查者（网关请求日志四路径、sidecar 生命周期、kclaude 写盘、日志聚合），按 dev-workflow 的要求出报告，确认的高 / 中问题修完
+- [ ] 8.1 版本号固定为 0.0.1（`package.json`、`tauri.conf.json`、`Cargo.toml` 三处一致），生成 minisign 密钥对，公钥写进 `tauri.conf.json`，私钥存本机并加入 `.gitignore`；验证：`cargo test version::consistent` 断言三处版本一致
+- [ ] 8.2 Rust `update::decide`：解析清单，`decide_update(current, manifest, platform)` 返回 none / background / forced；验证：`cargo test update::decide` 覆盖有新版、版本相等、低于 minRequiredVersion、恰好等于 minRequiredVersion、缺少当前平台、版本号格式错、清单不是 JSON、`minRequiredVersion` 缺失
+- [ ] 8.3 Rust 检查调度：启动时检查一次，之后每 60 分钟检查一次（按墙钟判断，睡眠唤醒后补查），失败时静默跳过；`background` 时下载并校验，写 `pending-update.json`，发 event；`forced` 时停网关、置 `upgrade_required`（开关与托盘启动命令拒绝执行，`config.json` 写 `upgradeRequired: true`）并发 event；验证：`cargo test update::schedule` 用注入时钟和假清单源覆盖首次检查、60 分钟周期、唤醒补查、连续失败不报错、同一版本不重复下载
+- [ ] 8.4 强制升级不可绕过：`gateway_start` 在 `upgrade_required` 时返回错误；kclaude 脚本读到 `upgradeRequired: true` 时提示升级并非零退出；验证：`cargo test update::forced_blocks_start`，以及 6.1 的脚本测试新增「强制升级时退出码非零且不调用 claude」
+- [ ] 8.5 启动时安装待更新：有 `pending-update.json` 且文件校验通过就先安装再进主界面，重启后恢复开关状态；安装失败时以当前版本启动并标记失败；验证：`cargo test update::pending` 覆盖正常、文件丢失、记录损坏、版本已不比当前新
+- [ ] 8.6 前端：状态栏和托盘的「新版本已下载，立即重启」、设置页版本区（当前版本、检查更新、失败提示和手动下载入口）、强制升级遮罩（进度、失败重试、安装包直链，不能关闭，期间开关与托盘启动项不可用）；验证：`pnpm test` 覆盖 update 状态 → 界面元素的纯函数映射
+- [ ] 8.7 `desktop/scripts/release.sh`：出包、签名、按「安装包 → .sig → HEAD 校验 → 覆盖 latest.json」的顺序上传 COS，`FORCE=1` 时二次确认；文档写进 `desktop/AGENTS.md` 发版一节；验证：`--dry-run` 模式打印上传计划并生成清单，用 `jq` 校验字段齐全
+- [ ] 8.8 端到端：本机用一个临时 HTTP 服务模拟 COS，先装 0.0.1，发布 0.0.2（普通）确认静默下载后重启生效，再发布 0.0.3 且 `minRequiredVersion=0.0.3`，确认 0.0.2 打开即进入强制升级并自动完成
+
+## 9. 集成验收
+
+- [ ] 9.1 macOS 本机出包：`make sidecar && make dmg-local`，安装 dmg 后在你的机器上走一遍：环境检测全部通过 → 打开开关 → 新开终端运行 `kclaude -p "hi"`（用 haiku）→ 日志页 3 秒内出现记录，credits 与 `gateway.log` 里的 `[Credit]` 一致 → 关闭窗口后 kclaude 仍可用 → 托盘退出后没有遗留进程 → `claude` 本身不受影响；全程截图
+- [ ] 9.2 在临时 HOME 下（`HOME=$(mktemp -d)`）跑一遍首次安装流程，确认没有 kiro-cli 登录时的提示和禁用开关的行为正确，并且不碰你真实的 `~/.zshrc`
+- [ ] 9.3 Windows 实机（或 CI windows runner）：跑 `build-sidecar.ps1`、出 NSIS 包、确认 kiro-cli 数据库路径并更新候选列表、走一遍 9.1 的流程；没有条件时把这一项标为阻塞，并在 README 待办里写明
+- [ ] 9.4 对抗式审查（大功能）：按模块派独立审查者（网关请求日志四路径、sidecar 生命周期、kclaude 写盘、日志聚合、升级与强制升级），按 dev-workflow 的要求出报告，确认的高 / 中问题修完
 
 ## Workflow follow-up
 
 - verify 通过后 archive，把 delta specs 合并到 `openspec/specs/`。
-- 后续 change：应用内升级（updater）与签名公证、Windows CI 出包。
+- 后续 change：Apple 签名公证与 Windows Authenticode、Windows CI 出包。

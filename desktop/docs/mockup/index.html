@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiro Gateway 桌面端原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/*
+  原型说明：v0.0.1 桌面端界面草案。左侧是原型控制（切换状态），右侧是 App 窗口本身（880×600）。
+  视觉：工程工具的冷静底色，唯一的「重」元素是网关开关；其余信息都压低音量。
+*/
+:root {
+  --paper: #e8ebef;
+  --window: #f7f8fa;
+  --panel: #ffffff;
+  --ink: #18202c;
+  --muted: #5d6676;
+  --faint: #8d95a3;
+  --line: #dde1e7;
+  --line-strong: #c8ced7;
+  --on: #2f6b4f;
+  --on-soft: #e3f0e8;
+  --on-glow: #4fae7f;
+  --warn: #a2650b;
+  --warn-soft: #fbf0dc;
+  --bad: #b2362d;
+  --bad-soft: #fbe6e3;
+  --focus: #3b5bdb;
+  --sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #14171c; --window: #1b1f26; --panel: #222730; --ink: #e7eaef; --muted: #9aa3b2;
+    --faint: #6c7584; --line: #2e3440; --line-strong: #3b4351; --on: #7fd3a5; --on-soft: #1f3a2d;
+    --on-glow: #5cc490; --warn: #e8b05a; --warn-soft: #3a2f1c; --bad: #f08a80; --bad-soft: #3d2423; --focus: #8ea6ff;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #14171c; --window: #1b1f26; --panel: #222730; --ink: #e7eaef; --muted: #9aa3b2;
+  --faint: #6c7584; --line: #2e3440; --line-strong: #3b4351; --on: #7fd3a5; --on-soft: #1f3a2d;
+  --on-glow: #5cc490; --warn: #e8b05a; --warn-soft: #3a2f1c; --bad: #f08a80; --bad-soft: #3d2423; --focus: #8ea6ff;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+button, select, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+
+/* ---------- 舞台 ---------- */
+.stage { display: flex; gap: 28px; align-items: flex-start; justify-content: center; padding: 32px 16px 48px; flex-wrap: wrap; }
+.proto { width: 230px; flex: none; }
+.proto h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.proto p { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+.proto fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+.proto legend { font-size: 12.5px; color: var(--faint); margin-bottom: 6px; padding: 0; }
+.proto label { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.proto label:hover { background: var(--window); }
+.proto input { accent-color: var(--ink); }
+
+/* ---------- 窗口 ---------- */
+.window { width: 880px; max-width: 100%; height: 600px; background: var(--window); border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; display: grid; grid-template-rows: 46px 1fr 34px; box-shadow: 0 24px 60px -30px rgba(20, 30, 45, .45); position: relative; }
+.titlebar { display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--line); gap: 18px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line-strong); }
+.app-name { font-weight: 600; font-size: 13.5px; }
+.tabs { display: flex; gap: 2px; margin-left: auto; background: var(--paper); padding: 3px; border-radius: 8px; }
+.tabs button { border: 0; background: transparent; padding: 4px 14px; border-radius: 6px; font-size: 13px; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+main { overflow: auto; }
+.view { display: none; padding: 22px 24px; }
+.view.active { display: block; }
+
+.statusbar { border-top: 1px solid var(--line); display: flex; align-items: center; padding: 0 14px; gap: 14px; font-size: 12px; color: var(--faint); }
+.statusbar .grow { flex: 1; }
+.statusbar button { border: 0; background: none; color: var(--focus); padding: 0; font-size: 12px; }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); display: inline-block; margin-right: 6px; vertical-align: 1px; }
+.pulse.on { background: var(--on-glow); }
+.pulse.bad { background: var(--bad); }
+
+/* ---------- 主页布局 ---------- */
+.home { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+.panel h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted); }
+
+/* 开关：整个界面唯一的重元素 */
+.switch-panel { padding: 22px 22px 20px; }
+.switch-row { display: flex; align-items: center; gap: 20px; }
+.rocker { --w: 116px; --h: 60px; width: var(--w); height: var(--h); flex: none; border-radius: 14px; border: 1px solid var(--line-strong); background: var(--paper); position: relative; padding: 0; transition: background .25s; }
+.rocker::before { content: ""; position: absolute; top: 5px; left: 5px; width: 50px; height: 48px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 2px 0 var(--line-strong); transition: transform .28s cubic-bezier(.3,.7,.2,1); }
+.rocker::after { content: "OFF"; position: absolute; right: 16px; top: 50%; transform: translateY(-50%); font: 500 11px var(--mono); color: var(--faint); letter-spacing: .04em; }
+.rocker[aria-checked="true"] { background: var(--on); border-color: var(--on); }
+.rocker[aria-checked="true"]::before { transform: translateX(54px); border-color: var(--on); box-shadow: 0 2px 0 rgba(0,0,0,.25); }
+.rocker[aria-checked="true"]::after { content: "ON"; right: auto; left: 18px; color: #fff; }
+.rocker[data-busy="true"]::before { animation: nudge 1s ease-in-out infinite; }
+.rocker:disabled { opacity: .45; cursor: not-allowed; }
+@keyframes nudge { 50% { transform: translateX(14px); } }
+@media (prefers-reduced-motion: reduce) { .rocker::before { transition: none; animation: none !important; } }
+
+.state-title { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 0; line-height: 1.2; }
+.state-sub { color: var(--muted); margin: 4px 0 0; font-size: 13px; }
+.state-sub code { color: var(--ink); }
+
+.notice { margin-top: 16px; border-radius: 8px; padding: 10px 12px; font-size: 13px; display: none; }
+.notice.show { display: block; }
+.notice.bad { background: var(--bad-soft); color: var(--bad); }
+.notice.warn { background: var(--warn-soft); color: var(--warn); }
+.notice p { margin: 0; }
+.notice pre { margin: 8px 0 0; font: 11.5px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; max-height: 64px; overflow: hidden; }
+.notice .actions { margin-top: 8px; display: flex; gap: 8px; }
+
+.btn { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 7px; padding: 4px 11px; font-size: 12.5px; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--ink); color: var(--window); border-color: var(--ink); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--focus); padding-left: 0; padding-right: 0; }
+
+/* kclaude */
+.cmd { display: flex; align-items: center; gap: 10px; background: var(--paper); border-radius: 8px; padding: 8px 10px; }
+.cmd code { font-size: 14px; font-weight: 500; }
+.cmd .hint { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+.mapping { margin: 12px 0 0; display: grid; grid-template-columns: 64px 1fr; row-gap: 4px; font-size: 13px; }
+.mapping dt { color: var(--muted); }
+.mapping dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
+.kc-state { font-size: 13px; margin: 0 0 10px; }
+.kc-state.warn { color: var(--warn); }
+
+/* 环境检测 */
+.checks { list-style: none; margin: 0; padding: 0; }
+.checks li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.checks li:first-child { border-top: 0; padding-top: 2px; }
+.mark { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; margin-top: 1px; }
+.mark svg { width: 11px; height: 11px; }
+.mark.ok { background: var(--on-soft); color: var(--on); }
+.mark.bad { background: var(--bad-soft); color: var(--bad); }
+.mark.skip { background: var(--paper); color: var(--faint); }
+.check-name { font-weight: 500; }
+.check-detail { color: var(--muted); font-size: 12.5px; }
+.check-fix { margin-top: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.check-fix code { background: var(--paper); padding: 2px 6px; border-radius: 4px; }
+.recheck { margin-top: 10px; }
+
+/* 用量摘要 */
+.usage-strip { display: flex; align-items: baseline; gap: 22px; }
+.usage-strip .num { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-strip .lbl { color: var(--muted); font-size: 12.5px; display: block; }
+.usage-strip .btn { margin-left: auto; align-self: center; }
+
+/* ---------- 请求日志 ---------- */
+.log-head { display: grid; grid-template-columns: 1fr 1fr 1.6fr; gap: 16px; margin-bottom: 16px; }
+.big { font-size: 28px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.big small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
+.sub { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.bars li { display: grid; grid-template-columns: 118px 1fr 52px; gap: 8px; align-items: center; font-size: 12.5px; }
+.bars .model { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bars .track { height: 6px; background: var(--paper); border-radius: 3px; overflow: hidden; }
+.bars .fill { height: 100%; background: var(--ink); border-radius: 3px; opacity: .75; }
+.bars .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+.filters { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.seg { display: inline-flex; background: var(--paper); border-radius: 7px; padding: 2px; }
+.seg button { border: 0; background: transparent; padding: 3px 10px; border-radius: 5px; font-size: 12.5px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink); }
+select { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 7px; padding: 3px 8px; font-size: 12.5px; }
+.filters .live { margin-left: auto; color: var(--faint); font-size: 12px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--faint); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 7px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.model { font-family: var(--mono); font-size: 12px; }
+td.num, th.num { text-align: right; }
+tr.fail { cursor: pointer; }
+tr.fail:hover td { background: var(--panel); }
+.tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; }
+.tag.ok { color: var(--on); background: var(--on-soft); }
+.tag.err { color: var(--bad); background: var(--bad-soft); }
+.tag.ref { color: var(--warn); background: var(--warn-soft); }
+.tag.gone { color: var(--muted); background: var(--paper); }
+tr.detail td { white-space: normal; background: var(--panel); color: var(--muted); font-size: 12.5px; padding: 10px 12px 12px 40px; }
+tr.detail strong { color: var(--ink); font-weight: 500; }
+.empty { text-align: center; color: var(--muted); padding: 48px 0; }
+.empty code { background: var(--paper); padding: 2px 6px; border-radius: 4px; color: var(--ink); }
+
+/* ---------- 设置 ---------- */
+.settings { max-width: 560px; }
+.setting { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.setting:last-child { border-bottom: 0; }
+.setting .name { font-weight: 500; }
+.setting .desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.field-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: center; margin-bottom: 6px; font-size: 13px; }
+.field-row span { color: var(--muted); }
+input[type="number"] { width: 96px; border: 1px solid var(--line-strong); background: var(--panel); border-radius: 7px; padding: 3px 8px; }
+.mini-switch { width: 34px; height: 20px; border-radius: 10px; border: 0; background: var(--line-strong); position: relative; padding: 0; flex: none; }
+.mini-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.mini-switch[aria-checked="true"] { background: var(--on); }
+.mini-switch[aria-checked="true"]::after { transform: translateX(14px); }
+.inline { display: flex; gap: 10px; align-items: center; }
+
+/* ---------- 强制升级遮罩 ---------- */
+.overlay { position: absolute; inset: 46px 0 0; background: var(--window); display: none; place-items: center; z-index: 5; }
+.overlay.show { display: grid; }
+.upgrade { width: 340px; text-align: center; }
+.upgrade h2 { font-size: 18px; margin: 0 0 6px; }
+.upgrade p { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+.progress { height: 6px; background: var(--paper); border-radius: 3px; overflow: hidden; }
+.progress i { display: block; height: 100%; width: 62%; background: var(--ink); border-radius: 3px; }
+.upgrade .small { margin-top: 10px; font-size: 12px; color: var(--faint); }
+
+/* 托盘菜单示意 */
+.tray { margin-top: 22px; width: 230px; }
+.tray-menu { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; padding: 5px; font-size: 13px; box-shadow: 0 10px 30px -18px rgba(0,0,0,.4); }
+.tray-menu div { padding: 4px 10px; border-radius: 5px; }
+.tray-menu .head { color: var(--muted); font-size: 12px; }
+.tray-menu .off { color: var(--faint); }
+.tray-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+@media (max-width: 760px) {
+  .home, .log-head { grid-template-columns: 1fr; }
+  .window { height: auto; min-height: 600px; }
+  .setting { grid-template-columns: 1fr; gap: 6px; }
+  td.hide-sm, th.hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <aside class="proto" aria-label="原型控制">
+    <h1>Kiro Gateway 桌面端</h1>
+    <p>v0.0.1 界面草案。切换下面的状态看各种情况下的样子。</p>
+    <fieldset>
+      <legend>网关与环境</legend>
+      <label><input type="radio" name="st" value="running" checked> 运行中</label>
+      <label><input type="radio" name="st" value="stopped"> 已停止</label>
+      <label><input type="radio" name="st" value="starting"> 启动中</label>
+      <label><input type="radio" name="st" value="nologin"> kiro-cli 未登录</label>
+      <label><input type="radio" name="st" value="nocli"> 没装 kiro-cli</label>
+      <label><input type="radio" name="st" value="port"> 端口被占用</label>
+      <label><input type="radio" name="st" value="crashed"> 意外退出</label>
+      <label><input type="radio" name="st" value="expired"> 登录已失效</label>
+    </fieldset>
+    <fieldset>
+      <legend>kclaude</legend>
+      <label><input type="radio" name="kc" value="ok" checked> 已安装</label>
+      <label><input type="radio" name="kc" value="foreign"> 检测到已有 kclaude</label>
+      <label><input type="radio" name="kc" value="noclaude"> 没装 Claude Code</label>
+    </fieldset>
+    <fieldset>
+      <legend>升级</legend>
+      <label><input type="radio" name="up" value="none" checked> 已是最新</label>
+      <label><input type="radio" name="up" value="ready"> 已静默下载，待重启</label>
+      <label><input type="radio" name="up" value="force"> 强制升级中</label>
+      <label><input type="radio" name="up" value="forcefail"> 强制升级下载失败</label>
+    </fieldset>
+    <fieldset>
+      <legend>请求日志</legend>
+      <label><input type="radio" name="lg" value="some" checked> 有记录</label>
+      <label><input type="radio" name="lg" value="empty"> 还没有请求</label>
+    </fieldset>
+    <fieldset>
+      <legend>外观</legend>
+      <label><input type="radio" name="th" value="" checked> 跟随系统</label>
+      <label><input type="radio" name="th" value="light"> 浅色</label>
+      <label><input type="radio" name="th" value="dark"> 深色</label>
+    </fieldset>
+
+    <div class="tray">
+      <legend style="font-size:12.5px;color:var(--faint);display:block;margin-bottom:6px">托盘菜单</legend>
+      <div class="tray-menu" id="trayMenu"></div>
+    </div>
+  </aside>
+
+  <div class="window" id="win">
+    <header class="titlebar">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="app-name">Kiro Gateway</span>
+      <nav class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="home">主页</button>
+        <button role="tab" aria-selected="false" data-tab="logs">请求日志</button>
+        <button role="tab" aria-selected="false" data-tab="settings">设置</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- 主页 -->
+      <section class="view active" id="view-home">
+        <div class="home">
+          <div class="col">
+            <div class="panel switch-panel">
+              <div class="switch-row">
+                <button class="rocker" id="rocker" role="switch" aria-checked="true" aria-label="KiroGateway 开关"></button>
+                <div>
+                  <p class="state-title" id="stateTitle">运行中</p>
+                  <p class="state-sub" id="stateSub"></p>
+                </div>
+              </div>
+              <div class="notice" id="notice"></div>
+            </div>
+
+            <div class="panel">
+              <h2>kclaude 命令</h2>
+              <p class="kc-state" id="kcState"></p>
+              <div class="cmd"><code>kclaude</code><span class="hint" id="kcHint">用法和 claude 一样</span></div>
+              <dl class="mapping">
+                <dt>opus</dt><dd>claude-opus-5.5 [1m]</dd>
+                <dt>sonnet</dt><dd>claude-sonnet-5.5 [1m]</dd>
+                <dt>haiku</dt><dd>claude-haiku-4.5</dd>
+              </dl>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel">
+              <h2>运行环境</h2>
+              <ul class="checks" id="checks"></ul>
+              <button class="btn recheck">重新检测</button>
+            </div>
+            <div class="panel">
+              <div class="usage-strip">
+                <div><span class="num" id="todayNum">1.84</span><span class="lbl">今日 credits，32 次请求</span></div>
+                <div><span class="num">46.20</span><span class="lbl">本月 credits</span></div>
+                <button class="btn" data-goto="logs">查看日志</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 请求日志 -->
+      <section class="view" id="view-logs">
+        <div class="log-head">
+          <div class="panel">
+            <div class="big" id="lgToday">1.84<small>credits</small></div>
+            <div class="sub" id="lgTodaySub">今日，32 次请求</div>
+          </div>
+          <div class="panel">
+            <div class="big" id="lgMonth">46.20<small>credits</small></div>
+            <div class="sub" id="lgMonthSub">10 月，611 次请求</div>
+          </div>
+          <div class="panel">
+            <ul class="bars" id="bars">
+              <li><span class="model">claude-opus-5.5</span><span class="track"><span class="fill" style="width:78%"></span></span><span class="val">36.02</span></li>
+              <li><span class="model">claude-sonnet-5.5</span><span class="track"><span class="fill" style="width:19%"></span></span><span class="val">8.77</span></li>
+              <li><span class="model">claude-haiku-4.5</span><span class="track"><span class="fill" style="width:3%"></span></span><span class="val">1.41</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="seg" role="group" aria-label="结果筛选">
+            <button aria-pressed="true">全部</button>
+            <button aria-pressed="false">仅失败</button>
+          </div>
+          <select aria-label="模型筛选"><option>全部模型</option><option>claude-opus-5.5</option><option>claude-sonnet-5.5</option><option>claude-haiku-4.5</option></select>
+          <span class="live" id="live">实时更新中</span>
+        </div>
+
+        <div id="logBody"></div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="view" id="view-settings">
+        <div class="settings">
+          <div class="setting">
+            <div><div class="name">端口</div><div class="desc">改完后重启网关生效，kclaude 会自动跟上</div></div>
+            <div class="inline"><input type="number" value="8000" aria-label="端口"><span class="desc">只监听本机 127.0.0.1</span></div>
+          </div>
+          <div class="setting">
+            <div><div class="name">模型对应</div><div class="desc">Claude Code 的三档模型分别用 Kiro 的哪个</div></div>
+            <div>
+              <div class="field-row"><span>opus</span><select><option>claude-opus-5.5 [1m]</option><option>claude-opus-5</option></select></div>
+              <div class="field-row"><span>sonnet</span><select><option>claude-sonnet-5.5 [1m]</option><option>claude-sonnet-4.6</option></select></div>
+              <div class="field-row"><span>haiku</span><select><option>claude-haiku-4.5</option></select></div>
+            </div>
+          </div>
+          <div class="setting">
+            <div><div class="name">开机自启</div><div class="desc">登录后在托盘里启动，并自动打开网关</div></div>
+            <div class="inline"><button class="mini-switch" role="switch" aria-checked="false" aria-label="开机自启"></button></div>
+          </div>
+          <div class="setting">
+            <div><div class="name">kclaude</div><div class="desc">写在 ~/.zshrc 里带标记的一段</div></div>
+            <div class="inline"><button class="btn">移除 kclaude</button></div>
+          </div>
+          <div class="setting">
+            <div><div class="name">版本</div><div class="desc">新版本会在后台下载，下次启动时生效</div></div>
+            <div class="inline"><span id="verText">0.0.1，已是最新</span><button class="btn ghost">检查更新</button></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <span id="sbState"><span class="pulse on"></span>127.0.0.1:8000</span>
+      <span class="grow"></span>
+      <span id="sbUpdate">v0.0.1</span>
+    </footer>
+
+    <div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="upTitle">
+      <div class="upgrade">
+        <h2 id="upTitle">正在升级到 0.0.3</h2>
+        <p id="upText">当前版本已停止使用，升级完成后才能继续用。完成后会自动重新打开。</p>
+        <div id="upBody"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const OK = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 6.5l2.2 2.2L9.5 3.8"/></svg>';
+const NO = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l6 6M9 3L3 9"/></svg>';
+const SKIP = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h6"/></svg>';
+
+const STATES = {
+  running:  { on: true,  title: '运行中', sub: '<code>127.0.0.1:8000</code>，已运行 2 小时 14 分', pulse: 'on' },
+  stopped:  { on: false, title: '已停止', sub: '打开开关后，就能在终端用 kclaude', pulse: '' },
+  starting: { on: true,  busy: true, title: '启动中', sub: '正在等待网关就绪', pulse: '' },
+  nologin:  { on: false, disabled: true, title: '已停止', sub: '先登录 kiro-cli 才能打开', pulse: '' },
+  nocli:    { on: false, disabled: true, title: '已停止', sub: '先安装 kiro-cli 才能打开', pulse: '' },
+  port:     { on: false, title: '没能启动', sub: '8000 端口被别的程序占用', pulse: 'bad',
+              notice: ['warn', '占用端口的是 <strong>python3.13</strong>（pid 89984），可能是你手动起的网关。可以先关掉它，或者换一个端口。', null, ['换个端口', '重试']] },
+  crashed:  { on: false, title: '意外退出', sub: '网关进程在 14:32 退出了', pulse: 'bad',
+              notice: ['bad', '网关进程意外退出。最后几行日志：', 'ERROR | kiro.auth:refresh - Token refresh failed: Connection reset\nERROR | main:lifespan - Startup aborted', ['重新启动', '打开完整日志']] },
+  expired:  { on: false, title: '没能启动', sub: 'kiro-cli 的登录已失效', pulse: 'bad',
+              notice: ['bad', '刷新登录失败（403）。在终端运行下面的命令重新登录，然后再打开开关。', null, ['复制登录命令']] },
+};
+
+function checks(st, kc) {
+  const cliOk = st !== 'nocli';
+  const loginOk = cliOk && st !== 'nologin';
+  const validOk = loginOk && st !== 'expired';
+  const claudeOk = kc !== 'noclaude';
+  return [
+    cliOk
+      ? ['ok', 'kiro-cli 已安装', '~/.local/bin/kiro-cli']
+      : ['bad', '没找到 kiro-cli', '网关要借用 kiro-cli 的登录', ['<button class="btn primary">打开安装页面</button>']],
+    !cliOk ? ['skip', 'kiro-cli 登录', '装好 kiro-cli 后再检测']
+      : loginOk ? ['ok', 'kiro-cli 已登录', 'AWS SSO 登录']
+      : ['bad', 'kiro-cli 还没登录', '在终端运行这条命令，浏览器里完成登录后点「重新检测」', ['<code>~/.local/bin/kiro-cli login</code>', '<button class="btn">复制</button>']],
+    !loginOk ? ['skip', '登录有效', '登录后再检测']
+      : validOk ? ['ok', '登录有效', '到期后会自动续期']
+      : ['bad', '登录已失效', '重新登录一次就好', ['<code>~/.local/bin/kiro-cli login</code>', '<button class="btn">复制</button>']],
+    claudeOk
+      ? ['ok', 'Claude Code 已安装', '~/.local/bin/claude']
+      : ['bad', '没找到 Claude Code', '网关照样能开，但 kclaude 要等装好 Claude Code 才能用', ['<button class="btn">查看安装方法</button>']],
+  ];
+}
+
+const LOGS = [
+  ['14:41:08', 'claude-opus-5.5', 'Anthropic', 'ok', '12.4 s', '0.3112'],
+  ['14:40:51', 'claude-opus-5.5', 'Anthropic', 'ok', '3.1 s', '0.0874'],
+  ['14:39:02', 'claude-haiku-4.5', 'Anthropic', 'ok', '0.9 s', '0.0034'],
+  ['14:37:45', 'claude-opus-5.5', 'Anthropic', 'gone', '41.0 s', '0.2201'],
+  ['14:22:10', 'claude-opus-5.5', 'Anthropic', 'ref', '2.2 s', '0.0410', '模型拒绝回答（CONTENT_FILTERED）。', '常见原因是开了伪推理。设置里已默认关闭 FAKE_REASONING；如果还出现，换个问法或换用 sonnet。'],
+  ['14:05:33', 'claude-sonnet-5.5', 'OpenAI', 'ok', '5.8 s', '0.0921'],
+  ['13:58:19', 'claude-opus-5.5', 'Anthropic', 'err', '0.4 s', '0', 'HTTP 402：Monthly request limit exceeded', 'Kiro 本月额度已用完。可以在 kiro-cli 里查看用量和重置时间。'],
+  ['13:51:02', 'claude-opus-5.5', 'Anthropic', 'err', '1.2 s', '0.0120', 'HTTP 400：prompt is too long', '对话超出了模型的上下文窗口。在 Claude Code 里执行 /compact 压缩一下。'],
+];
+const TAG = { ok: ['ok', '成功'], err: ['err', '失败'], ref: ['ref', '拒答'], gone: ['gone', '中途断开'] };
+
+function renderLogs(kind) {
+  const body = document.getElementById('logBody');
+  if (kind === 'empty') {
+    ['lgToday', 'lgMonth'].forEach(id => document.getElementById(id).innerHTML = '0<small>credits</small>');
+    document.getElementById('lgTodaySub').textContent = '今日，0 次请求';
+    document.getElementById('lgMonthSub').textContent = '10 月，0 次请求';
+    document.getElementById('bars').innerHTML = '<li style="grid-template-columns:1fr;color:var(--faint)">本月还没有用量</li>';
+    body.innerHTML = '<div class="empty">还没有请求。在终端运行 <code>kclaude</code> 试试，请求结束后会出现在这里。</div>';
+    return;
+  }
+  document.getElementById('lgToday').innerHTML = '1.84<small>credits</small>';
+  document.getElementById('lgTodaySub').textContent = '今日，32 次请求';
+  document.getElementById('lgMonth').innerHTML = '46.20<small>credits</small>';
+  document.getElementById('lgMonthSub').textContent = '10 月，611 次请求';
+  document.getElementById('bars').innerHTML = `
+    <li><span class="model">claude-opus-5.5</span><span class="track"><span class="fill" style="width:78%"></span></span><span class="val">36.02</span></li>
+    <li><span class="model">claude-sonnet-5.5</span><span class="track"><span class="fill" style="width:19%"></span></span><span class="val">8.77</span></li>
+    <li><span class="model">claude-haiku-4.5</span><span class="track"><span class="fill" style="width:3%"></span></span><span class="val">1.41</span></li>`;
+  let rows = '';
+  LOGS.forEach((r, i) => {
+    const [t, m, api, k, dur, cr, err, tip] = r;
+    const fail = k === 'err' || k === 'ref';
+    rows += `<tr class="${fail ? 'fail' : ''}" data-i="${i}" ${fail ? 'tabindex="0" aria-expanded="' + (i === 6) + '"' : ''}>
+      <td>${t}</td><td class="model">${m}</td><td class="hide-sm">${api}</td>
+      <td><span class="tag ${TAG[k][0]}">${TAG[k][1]}</span></td>
+      <td class="num hide-sm">${dur}</td><td class="num">${cr}</td></tr>`;
+    if (fail) rows += `<tr class="detail" data-for="${i}" ${i === 6 ? '' : 'hidden'}><td colspan="6"><strong>${err}</strong><br>${tip}</td></tr>`;
+  });
+  body.innerHTML = `<table><thead><tr><th>时间</th><th>模型</th><th class="hide-sm">接口</th><th>结果</th><th class="num hide-sm">耗时</th><th class="num">credits</th></tr></thead><tbody>${rows}</tbody></table>`;
+  body.querySelectorAll('tr.fail').forEach(tr => {
+    const toggle = () => {
+      const d = body.querySelector(`tr.detail[data-for="${tr.dataset.i}"]`);
+      d.hidden = !d.hidden;
+      tr.setAttribute('aria-expanded', String(!d.hidden));
+    };
+    tr.addEventListener('click', toggle);
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  });
+}
+
+function render() {
+  const st = document.querySelector('input[name=st]:checked').value;
+  const kc = document.querySelector('input[name=kc]:checked').value;
+  const up = document.querySelector('input[name=up]:checked').value;
+  const lg = document.querySelector('input[name=lg]:checked').value;
+  const s = STATES[st];
+
+  const rocker = document.getElementById('rocker');
+  rocker.setAttribute('aria-checked', String(s.on));
+  rocker.dataset.busy = String(!!s.busy);
+  rocker.disabled = !!s.disabled;
+  document.getElementById('stateTitle').textContent = s.title;
+  document.getElementById('stateSub').innerHTML = s.sub;
+
+  const n = document.getElementById('notice');
+  if (s.notice) {
+    const [tone, text, pre, actions] = s.notice;
+    n.className = `notice show ${tone}`;
+    n.innerHTML = `<p>${text}</p>${pre ? `<pre>${pre}</pre>` : ''}<div class="actions">${actions.map((a, i) => `<button class="btn${i === 0 ? ' primary' : ''}">${a}</button>`).join('')}</div>`;
+  } else {
+    n.className = 'notice';
+    n.innerHTML = '';
+  }
+
+  document.getElementById('checks').innerHTML = checks(st, kc).map(([tone, name, detail, fix]) => `
+    <li><span class="mark ${tone}">${tone === 'ok' ? OK : tone === 'bad' ? NO : SKIP}</span>
+      <div><div class="check-name">${name}</div><div class="check-detail">${detail}</div>
+      ${fix ? `<div class="check-fix">${fix.join('')}</div>` : ''}</div></li>`).join('');
+
+  const kcState = document.getElementById('kcState');
+  const kcHint = document.getElementById('kcHint');
+  if (kc === 'foreign') {
+    kcState.className = 'kc-state warn';
+    kcState.innerHTML = '~/.zshrc 里已经有一个你自己加的 kclaude，App 没有改动它。<br><button class="btn" style="margin-top:6px">改由 App 管理</button>';
+    kcHint.textContent = '当前用的是你自己的版本';
+  } else if (kc === 'noclaude') {
+    kcState.className = 'kc-state warn';
+    kcState.textContent = '已安装，但要先装好 Claude Code 才能用。';
+    kcHint.textContent = '用法和 claude 一样';
+  } else {
+    kcState.className = 'kc-state';
+    kcState.textContent = s.on && !s.busy ? '已就绪。新开一个终端就能用，原来的 claude 不受影响。' : '已安装。网关关着的时候运行会提示你先打开开关。';
+    kcHint.textContent = '用法和 claude 一样';
+  }
+
+  const pulse = s.pulse ? `<span class="pulse ${s.pulse}"></span>` : '<span class="pulse"></span>';
+  document.getElementById('sbState').innerHTML = pulse + (s.on && !s.busy ? '127.0.0.1:8000' : s.title);
+
+  const sbUp = document.getElementById('sbUpdate');
+  const ver = document.getElementById('verText');
+  if (up === 'ready') {
+    sbUp.innerHTML = 'v0.0.1，0.0.2 已下载 <button>立即重启</button>';
+    ver.textContent = '0.0.1，0.0.2 已下载，下次启动生效';
+  } else {
+    sbUp.textContent = up === 'force' ? 'v0.0.1' : 'v0.0.1';
+    ver.textContent = '0.0.1，已是最新';
+  }
+  const forced = up === 'force' || up === 'forcefail';
+  document.getElementById('overlay').classList.toggle('show', forced);
+  document.getElementById('upBody').innerHTML = up === 'forcefail'
+    ? `<p style="color:var(--bad);margin:0 0 12px">下载失败：网络连接超时</p>
+       <button class="btn primary">重试</button>
+       <div class="small">也可以手动下载安装包：<a href="#">Kiro-Gateway_0.0.3.dmg</a></div>`
+    : `<div class="progress" aria-label="下载进度 62%"><i></i></div><div class="small">已下载 17.4 / 28.1 MB</div>`;
+
+  document.getElementById('live').textContent = s.on && !s.busy ? '实时更新中' : '网关未运行';
+  renderLogs(lg);
+
+  document.getElementById('trayMenu').innerHTML = `
+    <div class="head">${forced ? '需要升级到 0.0.3' : 'KiroGateway ' + (s.on && !s.busy ? '运行中' : s.title)}</div>
+    <div class="head">今日 1.84 credits</div><hr>
+    ${forced ? '<div class="off">启动网关（需要先升级）</div>' : `<div>${s.on ? '停止网关' : '启动网关'}</div>`}
+    <div>打开主窗口</div>
+    ${up === 'ready' ? '<div>重启以完成更新</div>' : ''}<hr>
+    <div>退出</div>`;
+
+  const th = document.querySelector('input[name=th]:checked').value;
+  if (th) document.documentElement.dataset.theme = th; else delete document.documentElement.dataset.theme;
+}
+
+document.querySelectorAll('.proto input').forEach(i => i.addEventListener('change', render));
+
+function goTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+}
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => goTab(b.dataset.tab)));
+document.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => goTab(b.dataset.goto)));
+
+document.getElementById('rocker').addEventListener('click', () => {
+  const cur = document.querySelector('input[name=st]:checked').value;
+  const next = cur === 'running' || cur === 'starting' ? 'stopped' : 'starting';
+  document.querySelector(`input[name=st][value=${next}]`).checked = true;
+  render();
+  if (next === 'starting') setTimeout(() => {
+    if (document.querySelector('input[name=st]:checked').value === 'starting') {
+      document.querySelector('input[name=st][value=running]').checked = true; render();
+    }
+  }, 1400);
+});
+document.querySelector('.mini-switch').addEventListener('click', e => {
+  const b = e.currentTarget; b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true'));
+});
+document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+}));
+
+render();
+</script>
+</body>
+</html>
