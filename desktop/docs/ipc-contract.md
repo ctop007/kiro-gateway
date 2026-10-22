@@ -12,7 +12,7 @@
 - **路径**：返回给前端用于展示的路径一律以 `~` 缩写用户目录（`displayPath`）；前端拿到的路径只用于显示和复制，不会再传回 Rust 当参数。唯一例外是修复命令里的 kiro-cli 绝对路径（见环境检测）。
 - **错误**：command 失败时 promise reject，值固定为：
   ```json
-  { "code": "port_in_use", "message": "8000 端口已被占用" }
+  { "code": "port_in_use", "message": "6868 端口已被占用" }
   ```
   - `code` 是下表中的稳定枚举，前端按它分支，不解析 `message`。
   - `message` 是可以直接展示的中文一句话，不含 URL、堆栈、token、访问密钥。
@@ -45,7 +45,8 @@
 type ModelTier = 'opus' | 'sonnet' | 'haiku'
 
 interface AppConfig {
-  port: number                         // 1024..=65535，默认 8000
+  port: number                         // 1024..=65535，默认 6868
+  commandName: string                  // kclaude 命令名，默认 cclaude；规则见第 4 节
   models: Record<ModelTier, string>    // 默认 opus=claude-opus-5-5[1m]、sonnet=claude-sonnet-5-5[1m]、haiku=claude-haiku-4-5
   autostart: boolean                   // 开机自启，默认 false；值为系统实际状态
   gatewayWanted: boolean               // 上次用户是否打开了开关（重启 / 更新后据此恢复）
@@ -54,6 +55,7 @@ interface AppConfig {
 
 interface ConfigPatch {
   port?: number
+  commandName?: string
   models?: Partial<Record<ModelTier, string>>
   autostart?: boolean
 }
@@ -75,6 +77,7 @@ interface ConfigUpdateResult {
 - 开机自启的系统调用在写盘之前执行；系统调用失败时整个 patch 不生效（端口、模型都不变），返回 `write_failed`，`message` 为「没能修改开机自启，请检查系统设置」。
 - `autostart` 由 Rust 调 `tauri-plugin-autostart` 的 Rust API 开关，返回值反映操作后的系统实际状态；前端没有 autostart 权限。
 - 访问密钥（`secret`）永远不经 IPC 返回。
+- 改 `commandName` 时 Rust 先校验（错误码 `invalid_argument`，`message` 写明原因：格式不对 / 保留名 / 已被占用），通过后写 config，再按新名字重写脚本与启动文件的标记段（等同一次 `kclaude_install`，写前备份）；返回的 `ConfigUpdateResult.config` 是改名完成后的状态。kclaude 处于 `foreign` 或被用户移除时只保存名字，不写启动文件。
 
 ## 2. 网关（gateway）
 
@@ -92,7 +95,7 @@ interface PortOccupant {
 
 interface GatewayFailure {
   kind: FailureKind
-  message: string                      // 一句中文原因，例如「8000 端口被别的程序占用」
+  message: string                      // 一句中文原因，例如「6868 端口被别的程序占用」
   occupant: PortOccupant | null        // 仅 kind=port_in_use 时非 null
   logExcerpt: string[]                 // gateway.log 最后最多 20 行，已脱敏（≥32 位 base64/hex 串、访问密钥原文替换为 "***"）；无日志时为 []
   at: string                           // 失败或退出发生的时间
@@ -207,6 +210,7 @@ interface KclaudeVerify {
 }
 
 interface KclaudeStatus {
+  commandName: string        // 当前命令名（与 AppConfig.commandName 一致）
   state: KclaudeState
   shell: ShellKind
   rcFiles: string[]          // 涉及的启动文件，~ 缩写，例如 ["~/.zshrc"]；Windows 为两个 profile
@@ -377,6 +381,8 @@ type UpdateStatus = UpdateState & {
 - `kiro-gateway-desktop --selftest`：无窗口的验收运行，release 构建里没有这个参数。
 
 ## 变更记录
+
+- 2026-10-23：默认端口 8000 → 6868；新增 `AppConfig.commandName` / `ConfigPatch.commandName`（默认 `cclaude`）与 `KclaudeStatus.commandName`。脚本文件名、标记段与 `foreign` 检测都按当前命令名；标记段固定为 `# >>> kiro-gateway-desktop command >>>` / `# <<< kiro-gateway-desktop command <<<`，旧版 `kclaude` 标记段视为本 App 的旧标记段，升级时就地替换。
 
 - 2026-10-22：v1，scaffold 批次写定。相对任务描述的补充：`gateway_reveal_log`（mockup「打开完整日志」按钮需要）、`AppConfig.gatewayWanted` / `upgradeRequired`、`ConfigUpdateResult.restartRequired`、`EnvReport.kiroCliPath` / `claudePath` / `loginExpiresAt`、`KclaudeVerify.fix`（Windows 执行策略）、`request-log-appended` 跨日空推送、统一错误形状 `{ code, message }`。开机自启改由 Rust 持有（`config_update`），前端不注册 autostart 权限。
 - 2026-10-23：联调批次。`EnvReport.loginCommand`；`RequestLogAppended.reset`；`gatewayWanted` 语义；`config_update` 的自启失败语义；`env_not_ready` 的 `message`；失败文案；"(未知)" 改为 "未知模型"；kclaude.env 格式与 `kclaude.removed`；磁盘文件与 debug 开关两节。

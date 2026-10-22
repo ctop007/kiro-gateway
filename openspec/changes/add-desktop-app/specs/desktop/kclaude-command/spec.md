@@ -61,8 +61,23 @@ Windows 上，桌面端 SHALL 在当前用户的 PowerShell profile 中追加一
 `kclaude` SHALL 在每次运行时从 App 保存的配置读取端口、访问密钥和模型映射；用户在 App 里改了端口或模型后，已打开的终端里运行 `kclaude` MUST 使用新值。
 
 #### Scenario: 修改端口
-- **WHEN** 用户在 App 里把端口从 8000 改到 8100 并重启网关
-- **THEN** 在原来已打开的终端里运行 `kclaude` 连接到 8100
+- **WHEN** 用户在 App 里把端口从 6868 改到 6869 并重启网关
+- **THEN** 在原来已打开的终端里运行 `cclaude` 连接到 6869
+
+### Requirement: 命令名可设置
+命令名默认为 `cclaude`，用户 SHALL 能在设置里改成别的名字（例如测试时同时装两个不同名字）。名字 MUST 只含字母、数字、`-`、`_`，以字母开头，长度 2–32，且不能是 `claude` 或常见系统命令；改名后旧名字立即失效、新名字在新开的终端里可用，启动文件里只保留一段带标记的内容。
+
+#### Scenario: 改名
+- **WHEN** 用户在设置里把命令名从 `cclaude` 改成 `kclaude-test`
+- **THEN** 启动文件里的标记段指向新名字，新开的终端里 `kclaude-test` 可用、`cclaude` 不再存在，写前有备份
+
+#### Scenario: 非法名字
+- **WHEN** 用户输入 `claude`、`ls`、`9abc` 或带空格的名字
+- **THEN** 设置页提示原因，不保存，启动文件不变
+
+#### Scenario: 新名字已被别的命令占用
+- **WHEN** 用户输入的名字在 PATH 里已有同名可执行文件或在启动文件里已有同名函数 / alias
+- **THEN** 提示「这个名字已经被占用」，不保存
 
 ### Requirement: 卸载 kclaude
 界面 SHALL 提供「移除 kclaude」操作，删除 App 写入的那一段（按标记定位），保留文件中其他内容不变。
