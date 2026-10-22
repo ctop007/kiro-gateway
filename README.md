@@ -1,3 +1,132 @@
+# Kiro Gateway（内部版本）
+
+> 这是 [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) 的内部维护版本，在上游 `a5292ca` 的基础上合并了 17 个尚未被上游合并的社区 PR，并补了 4 个修复。
+> 本节为内部说明，**分隔线以下是上游原始 README**，保持原样以便同步。
+
+它能把你的 Kiro 账号变成一个本地的 OpenAI / Anthropic 兼容 API，供 Claude Code、Cursor 等工具使用。**每个人用自己的 Kiro 账号在本机运行**，不要共用别人的账号。
+
+## 快速上手
+
+前提：已安装 Python 3.10+，并且已经用 kiro-cli 登录过（`kiro-cli login`）。
+
+**1. 安装**
+
+```bash
+git clone <仓库地址>
+cd kiro-gateway
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip install -r requirements.txt
+```
+
+**2. 在项目根目录新建 `.env`**
+
+```bash
+# 客户端连网关用的密码，自己随便定一个（可以用 openssl rand -hex 16 生成）
+PROXY_API_KEY="换成你自己的随机字符串"
+
+# kiro-cli 的登录数据库，token、profileArn、区域都会从这里自动读取，不需要再配 PROFILE_ARN
+# macOS:
+KIRO_CLI_DB_FILE="~/Library/Application Support/kiro-cli/data.sqlite3"
+# Windows（路径待验证，请把 <用户名> 换成自己的；务必用正斜杠 /，双引号里的反斜杠会被当成转义符）:
+# KIRO_CLI_DB_FILE="C:/Users/<用户名>/AppData/Local/Kiro-Cli/data.sqlite3"
+
+# 推荐：关闭伪推理，避免 Opus 5 / 5.5、Sonnet 5.5 拒答（见下文）
+FAKE_REASONING=false
+```
+
+> ⚠️ 上游文档写的默认路径 `~/.local/share/kiro-cli/data.sqlite3` 在 macOS 上是错的，新版 kiro-cli 在 macOS 上把数据库放在 `~/Library/Application Support/kiro-cli/`。
+
+**3. 启动**
+
+```bash
+.venv/bin/python main.py --host 127.0.0.1        # 默认端口 8000；--host 127.0.0.1 表示只允许本机访问
+```
+
+看到 `Uvicorn running on http://127.0.0.1:8000` 就说明启动成功。网关刷新 token 后会写回 kiro-cli 的数据库，和 kiro-cli 共用登录状态，不会互相顶掉。
+
+**4. 接入客户端**
+
+| 客户端 | 配置 |
+|---|---|
+| Claude Code | `export ANTHROPIC_BASE_URL=http://localhost:8000`<br>`export ANTHROPIC_API_KEY=<你的 PROXY_API_KEY>` |
+| Cursor / Cline / Cherry Studio 等 | 选 OpenAI 兼容，Base URL 填 `http://localhost:8000/v1`，API Key 填你的 `PROXY_API_KEY` |
+
+查看自己账号可用的模型：
+
+```bash
+curl -s localhost:8000/v1/models -H "Authorization: Bearer <你的 PROXY_API_KEY>"
+```
+
+模型名写成 `claude-opus-5.5`、`claude-sonnet-4-6`、`claude-sonnet-4-5-20250929` 这些格式都可以，网关会自动转换。
+
+## 推荐配置：关闭伪推理
+
+Kiro 的 API 不支持原生的扩展思考，上游默认会往提示词里注入标签，让模型把推理过程写出来，再转成 thinking 块。
+Opus 5、Opus 5.5、Sonnet 5.5 等新模型会把这种做法识别为套取推理过程，直接拒答。设置 `FAKE_REASONING=false` 后：
+
+- 新模型可以正常回答，回答质量基本不受影响
+- 客户端里看不到"思考过程"
+- 输出更少，速度更快，消耗的 credits 也更少
+
+即使不关闭，本版本也会把拒答明确报告给客户端（见下方"自有修复"第 1 条），不会再返回莫名其妙的空回复。
+
+## 与上游的差异
+
+### 合并的上游 PR
+
+| 类别 | PR | 作用 |
+|---|---|---|
+| 模型 | [#289](https://github.com/jwadow/kiro-gateway/pull/289) | 同步 Kiro 最新模型列表（Opus 5.5、Sonnet 5.5、GPT-5.6 等）；修正 1M 上下文模型的 token 计数 |
+| | [#184](https://github.com/jwadow/kiro-gateway/pull/184) | 修复 `auto-kiro` 等模型别名无法使用 |
+| Claude Code 兼容 | [#264](https://github.com/jwadow/kiro-gateway/pull/264) | 支持 messages 中的 `role: system`（以前直接返回 422） |
+| | [#164](https://github.com/jwadow/kiro-gateway/pull/164) | 支持 `redacted_thinking` 内容块 |
+| 认证 / 搜索 | [#257](https://github.com/jwadow/kiro-gateway/pull/257) + [#213](https://github.com/jwadow/kiro-gateway/pull/213) | 修复企业 SSO 账号 web_search 返回 403 |
+| | [#276](https://github.com/jwadow/kiro-gateway/pull/276) | API 区域不再错误地取自凭证文件的 SSO 区域 |
+| | [#188](https://github.com/jwadow/kiro-gateway/pull/188) | `/v1/models` 支持 `x-api-key` 请求头 |
+| | [#183](https://github.com/jwadow/kiro-gateway/pull/183) | tokenizer 缓存到本地，网络抖动时 token 计数不会失效 |
+| 流式 / 解析 | [#268](https://github.com/jwadow/kiro-gateway/pull/268) | OpenAI 流式出错时把错误写进流里返回，不再返回空回复 |
+| | [#288](https://github.com/jwadow/kiro-gateway/pull/288) | 长时间无输出时发送 keepalive，防止客户端断开 |
+| | [#280](https://github.com/jwadow/kiro-gateway/pull/280) | 正确解析计费事件，日志中记录每次请求消耗的 credits |
+| | [#225](https://github.com/jwadow/kiro-gateway/pull/225) | 修复大参数工具调用（如大文件 Write）被误判为截断 |
+| | [#149](https://github.com/jwadow/kiro-gateway/pull/149) | 输出 token 计数包含工具调用 |
+| 转换 | [#286](https://github.com/jwadow/kiro-gateway/pull/286) | 合并相邻消息时不再丢失图片 |
+| | [#232](https://github.com/jwadow/kiro-gateway/pull/232) + [#169](https://github.com/jwadow/kiro-gateway/pull/169) | 工具 schema 中的 `oneOf` / `anyOf` / `allOf` 和 `required: null` 不再导致 400 |
+
+### 自有修复
+
+1. **模型拒答时明确告知客户端**：Kiro 用 `stopReason: CONTENT_FILTERED` 表示拒答，上游会忽略它，客户端只收到一个空的成功响应。现在 Anthropic 接口返回 `stop_reason: "refusal"`，OpenAI 接口返回 `finish_reason: "content_filter"`，日志里会写明原因和解决办法。
+2. **上下文超长时返回标准错误**：OpenAI 接口返回 `invalid_request_error` / `context_length_exceeded`，Anthropic 接口返回 `invalid_request_error`，并且 message 以 `prompt is too long` 开头，和官方 API 一致，便于客户端识别后压缩上下文。
+3. **修复 #149 的崩溃**：工具名或参数为空时，token 计数会抛异常。
+4. **修复 #225 丢数据**：工具参数同时以字符串和对象两种形式下发时，有一部分会被丢弃。
+
+以上改动都附带单元测试，全量测试共 1936 个，均通过。
+
+### 未合并的 PR
+
+- 重复的 PR：同一问题只保留质量最好的一个
+- 范围过大或夹带无关改动的 PR，例如 #244、#235、#228
+- 会改动用户内容的 PR，例如 #215、#216、#238
+- 与本组环境无关的 PR，例如 Docker、Codex 相关
+- 待处理：#182（超长 MCP 工具名，方向正确但实现需要重写）、#165（PDF 附件，需要先修改）
+
+## 维护
+
+```bash
+# 同步上游更新（origin 指向 GitHub 上游，internal 指向内部仓库）
+git fetch origin
+git merge origin/main
+.venv/bin/pytest -q            # 必须全部通过
+git push internal HEAD:main
+
+# 合并上游的某个 PR
+git fetch origin pull/<编号>/head:pr-<编号>
+git merge --no-ff pr-<编号>
+```
+
+许可证：本项目使用 AGPL-3.0，内部分发时须同时提供源码。通过本仓库分发即可满足这一要求。
+
+---
+
 <div align="center">
 
 # 👻 Kiro Gateway
