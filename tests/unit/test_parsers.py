@@ -5,6 +5,8 @@ Unit tests for AwsEventStreamParser and auxiliary parsing functions.
 Tests the parsing logic for AWS SSE stream from Kiro API.
 """
 
+import json
+
 import pytest
 
 from kiro.parsers import (
@@ -655,6 +657,118 @@ class TestAwsEventStreamParserFeed:
         print(f"Result: {events}")
         # Parser should continue working
         assert len(events) == 1
+
+
+class TestAwsEventStreamParserDictInputFragments:
+    """Tests for tool input streamed as dict fragments (PR #225)."""
+
+    @staticmethod
+    def _args(parser):
+        calls = parser.get_tool_calls()
+        assert len(calls) == 1
+        assert "_args_dict" not in calls[0]
+        return json.loads(calls[0]["function"]["arguments"])
+
+    def test_dict_fragments_are_merged_not_concatenated(self, aws_event_parser):
+        """
+        What it does: Streams two dict input fragments.
+        Goal: Result is one valid object, not '{"a":..}{"b":..}' misread as truncation.
+        """
+        aws_event_parser.feed(b'{"name":"write","toolUseId":"t1","input":{}}')
+        aws_event_parser.feed(b'{"input":{"path":"a.py"}}')
+        aws_event_parser.feed(b'{"input":{"content":"print(1)"}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {"path": "a.py", "content": "print(1)"}
+
+    def test_non_empty_dict_in_start_event_is_kept(self, aws_event_parser):
+        """
+        What it does: Start event carries a non-empty dict, followed by another dict.
+        Goal: Keys from the start event are not lost.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":{"a":1}}')
+        aws_event_parser.feed(b'{"input":{"b":2}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {"a": 1, "b": 2}
+
+    def test_complete_dict_in_start_event_with_stop(self, aws_event_parser):
+        """
+        What it does: Single start event with dict input and stop flag.
+        Goal: The one-shot form still works.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":{"q":"x"},"stop":true}')
+
+        assert self._args(aws_event_parser) == {"q": "x"}
+
+    def test_later_fragment_overrides_same_key(self, aws_event_parser):
+        """
+        What it does: Two dict fragments with the same key.
+        Goal: Merge semantics are deterministic (last write wins).
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":{}}')
+        aws_event_parser.feed(b'{"input":{"k":1}}')
+        aws_event_parser.feed(b'{"input":{"k":2}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {"k": 2}
+
+    def test_string_fragments_still_concatenate(self, aws_event_parser):
+        """
+        What it does: Classic string fragments.
+        Goal: The common path is unchanged.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":""}')
+        aws_event_parser.feed(b'{"input":"{\\"a\\": "}')
+        aws_event_parser.feed(b'{"input":"1}"}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {"a": 1}
+
+    def test_mixed_string_object_and_dict_fragments_are_merged(self, aws_event_parser):
+        """
+        What it does: A complete JSON-object string plus a dict fragment.
+        Goal: Neither part is dropped (review finding on PR #225).
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":"{\\"a\\": 1}"}')
+        aws_event_parser.feed(b'{"input":{"b":2}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {"a": 1, "b": 2}
+
+    def test_mixed_with_truncated_string_keeps_truncation_detection(self, aws_event_parser):
+        """
+        What it does: Truncated string fragments plus a dict fragment.
+        Goal: The string is not silently replaced, so truncation is still detected.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":"{\\"a\\": \\"long"}')
+        aws_event_parser.feed(b'{"input":{"b":2}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        calls = aws_event_parser.get_tool_calls()
+        assert len(calls) == 1
+        assert calls[0].get("_truncation_detected") is True
+
+    def test_empty_dict_fragments_only_give_empty_object(self, aws_event_parser):
+        """
+        What it does: Only empty dict fragments.
+        Goal: Results in {} rather than an error.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":{}}')
+        aws_event_parser.feed(b'{"input":{}}')
+        aws_event_parser.feed(b'{"stop":true}')
+
+        assert self._args(aws_event_parser) == {}
+
+    def test_unfinished_tool_call_is_finalized_without_internal_keys(self, aws_event_parser):
+        """
+        What it does: Stream ends before the stop event.
+        Goal: get_tool_calls() finalizes it and strips the internal accumulator.
+        """
+        aws_event_parser.feed(b'{"name":"f","toolUseId":"t1","input":{}}')
+        aws_event_parser.feed(b'{"input":{"x":"\xd0\xbf\xd1\x80\xd0\xb8"}}')
+
+        assert self._args(aws_event_parser) == {"x": "при"}
 
 
 class TestAwsEventStreamParserStopEvent:

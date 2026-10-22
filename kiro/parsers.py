@@ -467,15 +467,57 @@ class AwsEventStreamParser:
             self._finalize_tool_call()
         return None
     
+    @staticmethod
+    def _combine_tool_input_fragments(string_args: str, dict_args: Dict[str, Any], tool_name: str) -> str:
+        """
+        Combine dict-typed and string-typed tool input fragments into one JSON string.
+
+        Kiro streams tool input either as JSON string fragments (concatenated) or as
+        dict fragments (merged key by key). Concatenating dicts as strings produced
+        invalid JSON like '{"a":1}{"b":2}', which was then misreported as truncation.
+
+        Args:
+            string_args: Concatenated string fragments (may be empty)
+            dict_args: Merged dict fragments (non-empty)
+            tool_name: Tool name, for logging
+
+        Returns:
+            Arguments as a string. When both kinds are present and the string is a
+            JSON object, both are merged (dict fragments win on key conflicts). If
+            the string is not a JSON object it is returned unchanged so the normal
+            truncation diagnostics still run on it.
+        """
+        if not string_args.strip():
+            return json.dumps(dict_args)
+
+        try:
+            parsed = json.loads(string_args)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            logger.debug(f"Tool '{tool_name}' received both string and dict input fragments, merging them")
+            return json.dumps({**parsed, **dict_args})
+
+        logger.warning(
+            f"Tool '{tool_name}' received both dict and non-object string input fragments; "
+            f"keeping the string and dropping dict keys {sorted(dict_args)}"
+        )
+        return string_args
+
     def _finalize_tool_call(self) -> None:
         """Finalizes current tool call and adds to list."""
         if not self.current_tool_call:
             return
 
-        # Remove internal accumulator — serialize if populated
+        # Remove internal accumulator and fold it into the string arguments
         args_dict = self.current_tool_call.pop('_args_dict', None)
         if args_dict:
-            self.current_tool_call['function']['arguments'] = json.dumps(args_dict)
+            self.current_tool_call['function']['arguments'] = self._combine_tool_input_fragments(
+                self.current_tool_call['function']['arguments'],
+                args_dict,
+                self.current_tool_call['function'].get('name', 'unknown'),
+            )
 
         # Try to parse and normalize arguments as JSON
         args = self.current_tool_call['function']['arguments']
