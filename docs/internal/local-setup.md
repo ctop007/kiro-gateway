@@ -182,3 +182,72 @@ Kiro 按 credits 计费，不同模型的倍率不同。Claude Code 每次请求
 
 - **一键安装脚本 + 开机自启**（macOS / Windows）：自动探测 kiro-cli 数据库、生成 `.env`、注册后台服务
 - **服务器部署，供公司内部共用**：已有结论是行得通。用户、key、用量和计费交给 参考项目 平台管理，kiro-gateway 只作为 参考项目 的一个上游。建议每个 Kiro 账号跑一个网关实例，由 参考项目 负责负载均衡。kiro-gateway 自带的多账号模式只做故障切换（用完一个再换下一个），不做负载均衡。上线前需要先确认公司的 Kiro 订阅允许多人共用账号
+
+---
+
+## 九、桌面端（Kiro Gateway App）
+
+桌面端把上面手动做的事装进一个 App：内置网关、一个开关启停、自动装好 `kclaude` 命令、检测 kiro-cli 与 Claude Code、展示请求日志与 credits、应用内升级。代码在 [`desktop/`](../../desktop/)，规则见 [`desktop/AGENTS.md`](../../desktop/AGENTS.md)，行为定义见 `openspec/changes/add-desktop-app/`。
+
+### 安装与启动
+
+出包（macOS，需要 Rust 1.99、pnpm、Python 3.10+，Rust 在 `~/.cargo/bin`）：
+
+```bash
+cd desktop
+make sidecar            # 用 PyInstaller 把网关打成 sidecar，输出到 src-tauri/resources/gateway/
+make dmg-local          # 出未签名 dmg：src-tauri/target/release/bundle/dmg/
+```
+
+`make dmg-local` 会拉起 Finder 排版 dmg 窗口；在无人值守的环境里用 `CI=true pnpm tauri build --bundles app,dmg` 跳过排版。未签名的 App 被 Gatekeeper 拦住时：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Kiro Gateway.app"
+```
+
+打开 App 后：环境检测四项（kiro-cli 已安装、已登录、登录有效、Claude Code 已安装）全部通过，才能打开开关。开关打开后网关监听 `127.0.0.1:<端口>`，关闭窗口只是隐藏，托盘菜单可以启停网关、重启以完成更新、退出；从托盘退出时网关一起停止。
+
+### 和手动网关、`scripts/kclaude.zsh` 的关系
+
+| | 手动方式（前面几节） | 桌面端 |
+|---|---|---|
+| 网关 | 仓库里 `python main.py`，配置在 `~/kiro-gateway/.env` | 内置 sidecar，配置在 App 数据目录，不读 `.env` |
+| 访问密钥 | `.env` 里的 `PROXY_API_KEY` | App 首次启动随机生成，存在数据目录的 `secret`（权限 0600），不需要手填 |
+| 默认端口 | 8000 | 8000，可在设置里改 |
+| kclaude | `source scripts/kclaude.zsh`，网关没起会自动后台启动 | 标记段 `source` 数据目录下的 `kclaude.zsh`，网关没起只提示，不替你启动 |
+
+App 数据目录：`~/Library/Application Support/dev.kirogateway.desktop/`。里面有 `config.json`、`secret`、`kclaude.env`、`kclaude.zsh`、`logs/gateway.log`、`logs/requests/`（请求日志）、`runtime/`、`gateway.pid`。
+
+**两套不要同时占同一个端口。** 本机已经按手动方式在 8000 上跑着网关时，App 打开开关会提示 8000 被占用并给出占用者的进程名和 pid，不会去结束它。处理办法：先关掉手动网关，或者在 App 设置里换一个端口（改端口后需要重启网关才生效）。
+
+### kclaude 的启动文件管理
+
+App 启动时会在 `~/.zshrc`（bash 用户是 `~/.bashrc` / `~/.bash_profile`）里追加一个带标记的段，只有这一段归 App 管：
+
+```
+# >>> kiro-gateway-desktop kclaude >>>
+[ -r '…/kclaude.zsh' ] && source '…/kclaude.zsh'
+# <<< kiro-gateway-desktop kclaude <<<
+```
+
+- 写之前先备份成 `<原文件名>.bak-kiro-gateway-YYYYMMDD-HHMMSS`，备份失败就不写；标记段之外的内容逐字节不动。
+- **你现在的 `~/.zshrc` 里已经有 `source "$HOME/kiro-gateway/scripts/kclaude.zsh"`**，App 会把它识别为「已有 kclaude」（`foreign`），不会写入。要换成 App 管理，点界面上的「改由 App 管理」：旧的那一行会被注释成 `# disabled by Kiro Gateway App: …`，再加上标记段。想回到手动方式：点「移除」，再把注释掉的那一行恢复。
+- 已经打开的终端不会自动生效，新开一个终端。`kclaude.zsh` 每次运行都会读 `kclaude.env`，所以在 App 里改端口、模型映射后，已打开的终端里的 `kclaude` 下一次运行就生效。
+- 移除后，App 下次启动不会再自动装回（数据目录里有 `kclaude.removed` 标记；重新点「安装」会清除它）。
+- App 不碰 `claude` 命令本身、`~/.claude/` 和全局 `ANTHROPIC_*` 环境变量。
+
+### 升级
+
+升级包放在腾讯云 COS，App 启动时和之后每 60 分钟读一次 `latest.json`：
+
+- 普通更新：静默下载并校验签名，下次启动 App 时自动安装；也可以在状态栏或托盘点「重启以完成更新」。
+- 强制升级（清单里 `minRequiredVersion` 高于当前版本）：停网关，显示无法关闭的升级遮罩；期间开关和托盘启动项不可用，`kclaude` 提示「需要升级」并以非零状态退出。下载失败时遮罩上有重试和安装包直链。
+
+发版用 `desktop/scripts/release.sh`（流程、签名私钥位置、`--dry-run` 见 `desktop/AGENTS.md` 的「发版」一节）。
+
+### 排查
+
+- 网关日志：`~/Library/Application Support/dev.kirogateway.desktop/logs/gateway.log`（5 MB × 3 份轮转），界面上有「打开完整日志」。
+- 请求日志在 `logs/requests/requests-YYYY-MM.jsonl`，只保留本月和上月，界面上可以清空。
+- 登录失效：界面会给出 `<kiro-cli 绝对路径> login` 的复制按钮；App 不会替你执行它。
+- 无窗口验收：debug 构建的二进制支持 `--selftest`，在临时 HOME 里走一遍安装 kclaude、起真 sidecar、跑 `kclaude`、停网关、移除的流程，不碰真实的启动文件（见 `desktop/AGENTS.md`）。

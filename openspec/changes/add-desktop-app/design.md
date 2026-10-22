@@ -47,7 +47,7 @@
 
 ### 2. 配置全部通过环境变量传给 sidecar
 
-Rust 启动 sidecar 时清空继承来的 `ANTHROPIC_*` 和 `PROXY_*` 环境变量，再显式设置以下内容：
+Rust 启动 sidecar 时用**白名单**：先清空环境，只放行系统必要变量（`PATH`、`HOME`、`USER`、`LOGNAME`、`TMPDIR`、`LANG`、`LC_*`、`SHELL`、Windows 的 `SYSTEMROOT`/`WINDIR`/`APPDATA`/`LOCALAPPDATA`/`USERPROFILE`/`TEMP`/`TMP`/`COMSPEC`/`PATHEXT`、`SSL_CERT_FILE`/`SSL_CERT_DIR`，以及 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` 及其小写形式——代理要保留，国内用户靠它访问 Kiro），其余继承来的变量（包括 `ANTHROPIC_*`、`PROXY_*`、`DEBUG_MODE`、`VPN_PROXY_URL`、`REFRESH_TOKEN` 等所有网关配置项）一律不传，再显式设置以下内容：
 
 - `PROXY_API_KEY`：App 自己生成的密钥。
 - `KIRO_CLI_DB_FILE`：环境检测时找到的路径。
@@ -246,6 +246,12 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 - 绕过限制：网关只监听 127.0.0.1，并且需要密钥。
 - 数据损坏：半行 JSON 跳过，见 spec。
 
+### 12. 实施中补充的决定
+
+- macOS 被信号结束（`kill`、注销、updater 重启）后，AppKit 下次启动会在 `finishLaunching` 里弹「是否重新打开窗口」的模态框，主线程卡在这里，网关恢复和托盘都起不来。`ApplePersistenceIgnoreState` 只从 user defaults 读，写进 Info.plist 无效，所以启动最早处用 `registerDefaults:` 在易失的注册域里设为 YES（`src-tauri/src/macos_state.rs`），只作用于本进程、不落盘。
+- sidecar 的 `pre_exec` 恢复默认信号处置并清空信号屏蔽字：App 为了统一处理 SIGTERM 在主线程屏蔽了它，屏蔽字会被子进程继承。
+- 测试用的假 sidecar 端口改为由系统分配临时端口，不再和 8100–8199 共用，避免并行测试互相应答 `/health`。
+
 ## Migration Plan
 
 - 网关改动默认关闭，合并后不用桌面端的用户不受影响。
@@ -256,3 +262,34 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 
 - Windows 上 kiro-cli 的数据库路径和可执行文件位置：要等 Windows 真机确认。只影响候选路径列表，不影响整体方案。
 - App 名称和图标：暂定 "Kiro Gateway"，图标先用占位图。
+
+## 联调批次补充的决策（只补充，不改上面的内容）
+
+### 12. 启动顺序与线程
+
+`setup` 里同步做的事要快，慢的放后台线程，窗口和托盘先可用：
+
+1. 读配置与访问密钥（`app_config`）→ 载入请求日志（只读文件，不起轮询）。
+2. 建网关服务；建更新服务并立即处理 `pending-update.json`（装好会直接重启 App，所以排在其他一切之前）。
+3. 建托盘（订阅 `gateway-status`、`update-status`、`request-log-appended` 三个事件，不回调网关管理器，避免在它持锁时重入）。
+4. 后台线程：环境检测（顺带填好登录 shell 的 PATH 缓存）→ 安装 / 修复 kclaude → 按 `gatewayWanted` 恢复网关 → 启动请求日志轮询（1 秒）→ 启动更新调度（5 分钟一跳，60 分钟一次检查）。
+- 环境检测没通过时，`gatewayWanted` 保留为 true 但不启动网关；下次环境恢复后第一次打开 App 再恢复。
+- `autostart` 启动的实例（带 `--autostarted`）隐藏主窗口，只留托盘。
+- macOS 上 SIGTERM / SIGINT / SIGHUP 专门线程接收（其余线程屏蔽），先停网关再退出；否则 `kill <App 的 pid>` 会留下孤儿网关占着端口，要等下次启动才被回收。
+
+### 13. 强制升级的拒绝点
+
+`gateway_start` 与托盘的「启动网关」都走同一个 `start_guarded`：先问更新服务（内存状态 `forced`），再由网关服务查持久化的 `upgradeRequired`，任一为真就返回 `upgrade_required`，什么都不启动。持久化标志在 `gatewayWanted=true` 的重启场景里同样挡住自动恢复。
+
+### 14. 更新的下载与安装
+
+- 检查：`Updater::check()` 读清单；`Update::raw_json` 带完整清单（含插件会忽略的 `minRequiredVersion`、`manualDownload`），决策函数 `assess` 吃的是它。
+- 下载：`Update::download` 返回已校验签名的字节；写 `updates/<version>.bin` 与 `pending-update.json {version, sha256, manualUrl, savedAt}`（先包后记录，原子写）。包路径由校验过的版本号推出，不读记录里的路径。
+- 安装：下次启动 `process_pending` 先验记录、版本更新、sha256，再调 `Update::install(bytes)`（macOS 替换 `.app`，Windows 启动 NSIS 并退出）。离线拿不到更新句柄时保留包（`Deferred`，状态显示 `ready`）；安装器真的失败则删包并给 `install_failed` 与 `manualUrl`。
+- 强制升级写 `upgrade-lock.json {version, manualUrl}`：启动时若运行版本低于它，不等第一次检查就进入遮罩；运行版本达到后才清除 `upgradeRequired`。有标志但没有锁记录时，继续挡住，直到一次有效清单不再要求升级。
+- 调试：debug 构建认 `KIRO_GATEWAY_UPDATE_URL`，只接受回环地址、不带用户名密码；release 构建完全忽略。
+- 签名：Tauri 2 CLI 读 `TAURI_SIGNING_PRIVATE_KEY`（值可以是密钥文本或文件路径）；`TAURI_SIGNING_PRIVATE_KEY_PATH` 不被识别。`release.sh` 已改正并有回归测试。
+
+### 15. 前端与 Rust 的契约守卫
+
+`src-tauri/src/contract_tests.rs` 把各 command / event 的返回结构序列化成 JSON，与 `src/lib/ipc-types.ts` 里对应 interface 的字段名逐个比对（读 ts 文件解析），并检查 `CommandMap` 的 18 个命令与 `generate_handler!` 完全一致、Rust 能产生的错误码都在前端的 `IPC_ERROR_CODES` 里。改任何一端的字段而不改另一端，这组测试会失败。

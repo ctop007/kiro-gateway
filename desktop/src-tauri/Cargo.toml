@@ -19,20 +19,36 @@ tauri-plugin-single-instance = "=2.4.5"
 tauri-plugin-opener = "=2.5.4"
 tauri-plugin-clipboard-manager = "=2.3.2"
 tauri-plugin-autostart = "=2.5.1"
+tauri-plugin-updater = "=2.11.0"
+tauri-plugin-process = "=2.3.1"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 # Local-offset ISO 8601 timestamps for GatewayStatus.since / failure.at and backup names.
 chrono = "=0.4.44"
 # 32 random bytes for the access secret (OS CSPRNG, already in the tree via tauri).
 getrandom = "=0.3.4"
+# Read-only kiro-cli login probe (env_check::login); bundled SQLite so the app does not depend on the system one.
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# Plain HTTP to 127.0.0.1 only (/health, /v1/models); no TLS stack on purpose.
+ureq = { version = "=3.5.0", default-features = false }
+# SHA-256 of the downloaded update package (update::store).
+sha2 = "=0.10.9"
+# Parsing the debug-only manifest URL override (update::commands); already in the tree via tauri.
+url = "=2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 # kill(2) for SIGTERM / liveness checks and proc_pidpath on macOS (pid file reclaim).
 libc = "=0.2.186"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Turn off AppKit window-state restoration (macos_state.rs); same versions tauri already uses.
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSDictionary", "NSValue"] }
+
 [target.'cfg(windows)'.dependencies]
-# Job Object (kill sidecar with the app), process image path and TerminateProcess.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+# Job Object (kill sidecar with the app), process image path, TerminateProcess,
+# KnownFolder Documents and the execution-policy registry read (kclaude).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

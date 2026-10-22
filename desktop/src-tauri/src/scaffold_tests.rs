@@ -129,3 +129,4 @@ fn opener_is_limited_to_https_urls() {
         .collect();
     assert_eq!(urls, vec!["https://*"]);
 }
+

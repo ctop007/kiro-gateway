@@ -1,0 +1,21 @@
+# PyInstaller inputs that static analysis cannot see on its own.
+# One entry per line: "<kind> <module>". Kinds: collect-submodules, hidden-import.
+# Parsed by build_helpers.parse_spec(); a line with any other kind fails the build.
+
+# uvicorn picks its loop / http / websocket / lifespan implementations from
+# strings at runtime (uvicorn.config.LOOP_FACTORIES etc. via importlib).
+collect-submodules uvicorn
+
+# Several kiro modules are imported inside function bodies (routes, streaming,
+# exceptions, debug middleware). Collect the whole package so none is missed;
+# test_every_function_level_kiro_import_is_collected guards this list.
+collect-submodules kiro
+
+# main.py ends with uvicorn.run("main:app", ...), a string import. In a frozen
+# app the entry script is __main__, so "main" must also exist as a module.
+hidden-import main
+
+# tiktoken finds encodings through the tiktoken_ext namespace package plugin
+# mechanism (pkgutil.iter_modules), which PyInstaller does not follow.
+hidden-import tiktoken_ext
+hidden-import tiktoken_ext.openai_public

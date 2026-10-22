@@ -144,6 +144,9 @@ export interface KclaudeStatus {
 export type ApiKind = 'openai' | 'anthropic'
 export type Outcome = 'ok' | 'error' | 'refused' | 'client_disconnected'
 
+/** Group and filter label for records whose `model` is null or empty (contract section 5). */
+export const UNKNOWN_MODEL_LABEL = '未知模型'
+
 export interface RequestRecord {
   ts: string
   id: string | null
@@ -179,6 +182,12 @@ export interface RequestLogSnapshot extends UsageSummary {
 
 export interface RequestLogAppended extends UsageSummary {
   records: RequestRecord[]
+  /**
+   * True when a month file was deleted, truncated or replaced behind the app's back.
+   * `records` is then empty and the list the UI holds may contain records that no longer
+   * exist: reload with `request_log_snapshot` instead of merging.
+   */
+  reset: boolean
 }
 
 // ---------- 6. update ----------
@@ -192,6 +201,7 @@ export type UpdateState =
   | { state: 'none' }
   | { state: 'downloading'; version: string; progress: DownloadProgress }
   | { state: 'ready'; version: string }
+  | { state: 'installing'; version: string }
   | {
       state: 'forced'
       version: string
