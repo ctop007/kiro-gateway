@@ -77,9 +77,19 @@ curl -s localhost:8000/v1/models -H "Authorization: Bearer <你的 PROXY_API_KEY
 
 ## 接入客户端
 
+> 📖 **日常使用手册**（启动/停止、kclaude、日志、额度参考）：[docs/internal/local-setup.md](docs/internal/local-setup.md)
+
+**Claude Code 推荐用 `kclaude`**：仓库自带的 shell 函数，网关没开时会自动启动，并把 Opus/Sonnet/Haiku 映射到 Kiro 模型。在 `~/.zshrc` 里加一行即可：
+
+```bash
+source "$HOME/kiro-gateway/scripts/kclaude.zsh"
+```
+
+之后用 `kclaude` 代替 `claude`，原来的 `claude` 不受影响。
+
 | 客户端 | 配置方式 |
 |---|---|
-| **Claude Code** | `export ANTHROPIC_BASE_URL=http://localhost:8000`<br>`export ANTHROPIC_API_KEY=<你的 PROXY_API_KEY>` |
+| **Claude Code（手动配置）** | `export ANTHROPIC_BASE_URL=http://localhost:8000`<br>`export ANTHROPIC_AUTH_TOKEN=<你的 PROXY_API_KEY>`<br>模型名用短横线写法，如 `claude-opus-5-5[1m]` |
 | **Cursor / Cline / Cherry Studio 等** | 选择 OpenAI 兼容，Base URL 填 `http://localhost:8000/v1`，API Key 填你的 `PROXY_API_KEY` |
 | **OpenAI SDK** | `OpenAI(base_url="http://localhost:8000/v1", api_key="<PROXY_API_KEY>")` |
 | **Anthropic SDK** | `Anthropic(base_url="http://localhost:8000", api_key="<PROXY_API_KEY>")` |
