@@ -27,6 +27,9 @@ Architecture:
 - KiroErrorReason: Enum of known error reasons from Kiro API
 - KiroErrorInfo: Structured information about an enhanced error
 - enhance_kiro_error(): Analyzes error JSON and returns enhanced message
+- build_openai_error_body() / build_anthropic_error_body(): Client-facing error
+  bodies whose error types match what each native API returns for the same
+  condition, so clients can react (e.g. compact the conversation on overflow)
 
 Example:
     >>> error_json = {"message": "Input is too long.", "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"}
@@ -37,7 +40,7 @@ Example:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from loguru import logger
 
@@ -139,3 +142,88 @@ def enhance_kiro_error(error_json: Dict[str, Any]) -> KiroErrorInfo:
         user_message=user_message,
         original_message=original_message
     )
+
+
+# ==================================================================================================
+# Client-facing error bodies
+# ==================================================================================================
+
+# Kiro reason for a request that exceeds the model's context window
+CONTEXT_OVERFLOW_REASON = "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+
+# Default error types for Kiro errors without a native equivalent
+OPENAI_DEFAULT_ERROR_TYPE = "kiro_api_error"
+ANTHROPIC_DEFAULT_ERROR_TYPE = "api_error"
+
+# Native error shapes for context overflow. Clients key off these to trigger
+# their own recovery (Claude Code compacts on "prompt is too long",
+# OpenAI SDK users check code == "context_length_exceeded").
+OPENAI_CONTEXT_OVERFLOW_TYPE = "invalid_request_error"
+OPENAI_CONTEXT_OVERFLOW_CODE = "context_length_exceeded"
+ANTHROPIC_CONTEXT_OVERFLOW_TYPE = "invalid_request_error"
+ANTHROPIC_CONTEXT_OVERFLOW_PREFIX = "prompt is too long"
+
+
+def build_openai_error_body(message: str, status_code: int, reason: Optional[str]) -> Dict[str, Any]:
+    """
+    Build an OpenAI-format error body for a failed Kiro request.
+
+    Args:
+        message: User-facing error message (usually KiroErrorInfo.user_message)
+        status_code: HTTP status code returned by Kiro
+        reason: Kiro error reason, or None if it could not be extracted
+
+    Returns:
+        {"error": {...}} body. Context overflow uses OpenAI's native
+        invalid_request_error / context_length_exceeded; anything else keeps
+        the gateway's kiro_api_error type with the HTTP status as code.
+
+    Examples:
+        >>> build_openai_error_body("x", 400, "CONTENT_LENGTH_EXCEEDS_THRESHOLD")["error"]["code"]
+        'context_length_exceeded'
+    """
+    if reason == CONTEXT_OVERFLOW_REASON:
+        return {
+            "error": {
+                "message": message,
+                "type": OPENAI_CONTEXT_OVERFLOW_TYPE,
+                "code": OPENAI_CONTEXT_OVERFLOW_CODE,
+            }
+        }
+    return {
+        "error": {
+            "message": message,
+            "type": OPENAI_DEFAULT_ERROR_TYPE,
+            "code": status_code,
+        }
+    }
+
+
+def build_anthropic_error_body(message: str, reason: Optional[str]) -> Dict[str, Any]:
+    """
+    Build an Anthropic-format error body for a failed Kiro request.
+
+    Args:
+        message: User-facing error message (usually KiroErrorInfo.user_message)
+        reason: Kiro error reason, or None if it could not be extracted
+
+    Returns:
+        {"type": "error", "error": {...}} body. Context overflow uses the native
+        invalid_request_error type and a message starting with "prompt is too
+        long", the wording the real Anthropic API uses for this condition.
+
+    Examples:
+        >>> build_anthropic_error_body("x", "CONTENT_LENGTH_EXCEEDS_THRESHOLD")["error"]["type"]
+        'invalid_request_error'
+    """
+    if reason == CONTEXT_OVERFLOW_REASON:
+        if not message.lower().startswith(ANTHROPIC_CONTEXT_OVERFLOW_PREFIX):
+            message = f"{ANTHROPIC_CONTEXT_OVERFLOW_PREFIX}: {message}"
+        return {
+            "type": "error",
+            "error": {"type": ANTHROPIC_CONTEXT_OVERFLOW_TYPE, "message": message},
+        }
+    return {
+        "type": "error",
+        "error": {"type": ANTHROPIC_DEFAULT_ERROR_TYPE, "message": message},
+    }

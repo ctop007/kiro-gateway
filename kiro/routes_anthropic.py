@@ -51,6 +51,7 @@ from kiro.streaming_anthropic import (
     stream_with_first_token_retry_anthropic,
 )
 from kiro.http_client import KiroHttpClient
+from kiro.kiro_errors import build_anthropic_error_body
 from kiro.utils import generate_conversation_id
 from kiro.tokenizer import estimate_request_tokens
 from kiro.config import WEB_SEARCH_ENABLED
@@ -556,13 +557,7 @@ async def messages(
                         
                         return JSONResponse(
                             status_code=response.status_code,
-                            content={
-                                "type": "error",
-                                "error": {
-                                    "type": "api_error",
-                                    "message": last_error_message
-                                }
-                            }
+                            content=build_anthropic_error_body(last_error_message, error_reason)
                         )
                     
                     else:  # ErrorType.RECOVERABLE
@@ -761,12 +756,14 @@ async def messages(
             
             # Try to parse JSON response from Kiro to extract error message
             error_message = error_text
+            error_reason = None
             try:
                 error_json = json.loads(error_text)
                 # Enhance Kiro API errors with user-friendly messages
                 from kiro.kiro_errors import enhance_kiro_error
                 error_info = enhance_kiro_error(error_json)
                 error_message = error_info.user_message
+                error_reason = error_info.reason
                 # Log original error for debugging
                 logger.debug(f"Original Kiro error: {error_info.original_message} (reason: {error_info.reason})")
             except (json.JSONDecodeError, KeyError):
@@ -784,13 +781,7 @@ async def messages(
             # Return error in Anthropic format
             return JSONResponse(
                 status_code=response.status_code,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": error_message
-                    }
-                }
+                content=build_anthropic_error_body(error_message, error_reason)
             )
         
         if request_data.stream:

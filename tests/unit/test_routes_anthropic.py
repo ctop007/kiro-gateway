@@ -2616,3 +2616,56 @@ class TestStreamingErrorAfterResponseStart:
         assert "event: error" in response.text, "Error must be reported as an SSE event"
         assert "Model did not respond" in response.text, "Error event must carry the reason"
         print("✅ Streaming error delivered in-band without raising")
+
+
+# =============================================================================
+# Tests for context overflow error mapping
+# =============================================================================
+
+class TestContextOverflowErrorMapping:
+    """
+    Tests that Kiro's CONTENT_LENGTH_EXCEEDS_THRESHOLD reaches the client in the
+    native error shape of this API, so clients can compact and retry.
+    """
+
+    @staticmethod
+    def _kiro_error_client(mock_kiro_http_client_class, body: dict, status_code: int = 400):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.aread = AsyncMock(return_value=json.dumps(body).encode())
+        mock_client_instance = AsyncMock()
+        mock_client_instance.request_with_retry = AsyncMock(return_value=mock_response)
+        mock_client_instance.close = AsyncMock()
+        mock_kiro_http_client_class.return_value = mock_client_instance
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @patch('kiro.routes_anthropic.KiroHttpClient')
+    def test_overflow_is_reported_natively(self, mock_kiro_http_client_class, stream, test_client, valid_proxy_api_key):
+        """
+        What it does: Kiro returns 400 CONTENT_LENGTH_EXCEEDS_THRESHOLD.
+        Purpose: Client receives the native context-overflow error (both modes).
+        """
+        self._kiro_error_client(mock_kiro_http_client_class, {
+            "message": "Input is too long.", "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"})
+
+        response = test_client.post("/v1/messages", headers={"x-api-key": valid_proxy_api_key, "anthropic-version": "2023-06-01"}, json={**{"model": "claude-sonnet-4-5", "max_tokens": 100, "messages": [{"role": "user", "content": "Hello"}]}, "stream": stream})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["message"].startswith("prompt is too long")
+
+    @patch('kiro.routes_anthropic.KiroHttpClient')
+    def test_other_errors_keep_existing_shape(self, mock_kiro_http_client_class, test_client, valid_proxy_api_key):
+        """
+        What it does: Kiro returns a non-overflow error.
+        Purpose: Existing error shape is unchanged.
+        """
+        self._kiro_error_client(mock_kiro_http_client_class, {
+            "message": "Bad model", "reason": "INVALID_MODEL_ID"})
+
+        response = test_client.post("/v1/messages", headers={"x-api-key": valid_proxy_api_key, "anthropic-version": "2023-06-01"}, json={"model": "claude-sonnet-4-5", "max_tokens": 100, "messages": [{"role": "user", "content": "Hello"}]})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "api_error"

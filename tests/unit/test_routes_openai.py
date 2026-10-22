@@ -2297,3 +2297,57 @@ class TestChatCompletionsLegacyMode:
         
         assert failover_enabled is False
         print("✅ Legacy mode correctly skips failover loop")
+
+
+# =============================================================================
+# Tests for context overflow error mapping
+# =============================================================================
+
+class TestContextOverflowErrorMapping:
+    """
+    Tests that Kiro's CONTENT_LENGTH_EXCEEDS_THRESHOLD reaches the client in the
+    native error shape of this API, so clients can compact and retry.
+    """
+
+    @staticmethod
+    def _kiro_error_client(mock_kiro_http_client_class, body: dict, status_code: int = 400):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.aread = AsyncMock(return_value=json.dumps(body).encode())
+        mock_client_instance = AsyncMock()
+        mock_client_instance.request_with_retry = AsyncMock(return_value=mock_response)
+        mock_client_instance.close = AsyncMock()
+        mock_kiro_http_client_class.return_value = mock_client_instance
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_overflow_is_reported_natively(self, mock_kiro_http_client_class, stream, test_client, valid_proxy_api_key):
+        """
+        What it does: Kiro returns 400 CONTENT_LENGTH_EXCEEDS_THRESHOLD.
+        Purpose: Client receives the native context-overflow error (both modes).
+        """
+        self._kiro_error_client(mock_kiro_http_client_class, {
+            "message": "Input is too long.", "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"})
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={**{"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "Hello"}]}, "stream": stream})
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert error["code"] == "context_length_exceeded"
+
+    @patch('kiro.routes_openai.KiroHttpClient')
+    def test_other_errors_keep_existing_shape(self, mock_kiro_http_client_class, test_client, valid_proxy_api_key):
+        """
+        What it does: Kiro returns a non-overflow error.
+        Purpose: Existing error shape is unchanged.
+        """
+        self._kiro_error_client(mock_kiro_http_client_class, {
+            "message": "Bad model", "reason": "INVALID_MODEL_ID"})
+
+        response = test_client.post("/v1/chat/completions", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}, json={"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "Hello"}]})
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["type"] == "kiro_api_error"
+        assert error["code"] == 400

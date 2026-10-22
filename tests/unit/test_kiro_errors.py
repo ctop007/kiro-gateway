@@ -9,7 +9,9 @@ import pytest
 
 from kiro.kiro_errors import (
     KiroErrorInfo,
-    enhance_kiro_error
+    enhance_kiro_error,
+    build_openai_error_body,
+    build_anthropic_error_body,
 )
 
 
@@ -625,3 +627,76 @@ class TestEnhanceImproperlyFormedRequest:
 
         # Should fall through to generic handler, not the size-limit message
         assert "payload size exceeded" not in error_info.user_message
+
+
+class TestBuildOpenaiErrorBody:
+    """Tests for build_openai_error_body()."""
+
+    def test_context_overflow_uses_native_openai_shape(self):
+        """
+        What it does: Maps CONTENT_LENGTH_EXCEEDS_THRESHOLD to OpenAI's native error.
+        Purpose: Clients detect overflow via code == "context_length_exceeded".
+        """
+        body = build_openai_error_body("Too long", 400, "CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+
+        assert body == {"error": {
+            "message": "Too long",
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+        }}
+
+    @pytest.mark.parametrize("reason", [None, "UNKNOWN", "INVALID_MODEL_ID", "MONTHLY_REQUEST_COUNT", "content_length_exceeds_threshold"])
+    def test_other_reasons_keep_gateway_shape(self, reason):
+        """
+        What it does: Non-overflow reasons keep the existing kiro_api_error body.
+        Purpose: No behavior change for other errors (exact-match on the reason).
+        """
+        body = build_openai_error_body("Boom", 403, reason)
+
+        assert body == {"error": {"message": "Boom", "type": "kiro_api_error", "code": 403}}
+
+
+class TestBuildAnthropicErrorBody:
+    """Tests for build_anthropic_error_body()."""
+
+    def test_context_overflow_uses_native_anthropic_shape(self):
+        """
+        What it does: Maps overflow to invalid_request_error with "prompt is too long".
+        Purpose: Matches the real Anthropic API so Claude Code can compact and retry.
+        """
+        body = build_anthropic_error_body("Model context limit reached.", "CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["message"] == "prompt is too long: Model context limit reached."
+
+    def test_prefix_is_not_duplicated(self):
+        """
+        What it does: A message already starting with the prefix is left as is.
+        Purpose: Avoid "prompt is too long: Prompt is too long".
+        """
+        body = build_anthropic_error_body("Prompt is too long: 1 > 0", "CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+
+        assert body["error"]["message"] == "Prompt is too long: 1 > 0"
+
+    @pytest.mark.parametrize("reason", [None, "UNKNOWN", "INVALID_MODEL_ID"])
+    def test_other_reasons_keep_api_error(self, reason):
+        """
+        What it does: Non-overflow reasons keep the existing api_error body.
+        Purpose: No behavior change for other errors.
+        """
+        body = build_anthropic_error_body("Boom", reason)
+
+        assert body == {"type": "error", "error": {"type": "api_error", "message": "Boom"}}
+
+    def test_overflow_message_from_enhance_kiro_error_end_to_end(self):
+        """
+        What it does: Chains enhance_kiro_error() into the Anthropic body builder.
+        Purpose: Verifies the real reason string produced by the enhancer is recognized.
+        """
+        info = enhance_kiro_error({"message": "Input is too long.", "reason": "CONTENT_LENGTH_EXCEEDS_THRESHOLD"})
+
+        body = build_anthropic_error_body(info.user_message, info.reason)
+
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["message"].startswith("prompt is too long")
