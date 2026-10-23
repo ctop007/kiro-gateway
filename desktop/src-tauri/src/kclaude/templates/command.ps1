@@ -1,15 +1,15 @@
-# kclaude: run Claude Code through the local Kiro Gateway.
+# @@KCLAUDE_COMMAND@@: run Claude Code through the local Kiro Gateway.
 # Managed by the Kiro Gateway App. Edits are overwritten the next time the App starts.
 # This file is saved as UTF-8 with a BOM so Windows PowerShell 5 reads the messages correctly.
 #
 # Every run reads kclaude.env from the App data directory, so changing the port, access
 # key or model mapping in the App takes effect in sessions that are already open.
-function kclaude {
+function @@KCLAUDE_COMMAND@@ {
     $kcDir = @@KCLAUDE_DATA_DIR@@
     $kcEnv = Join-Path $kcDir 'kclaude.env'
 
     function Stop-Kclaude([string]$Message) {
-        [Console]::Error.WriteLine("kclaude: $Message")
+        [Console]::Error.WriteLine("@@KCLAUDE_COMMAND@@: $Message")
         $global:LASTEXITCODE = 1
     }
 

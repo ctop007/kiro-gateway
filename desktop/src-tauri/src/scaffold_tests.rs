@@ -130,3 +130,20 @@ fn opener_is_limited_to_https_urls() {
     assert_eq!(urls, vec!["https://*"]);
 }
 
+
+
+#[test]
+fn tray_template_icon_is_monochrome_with_alpha() {
+    // A template image must be pure black + alpha, or macOS shows it untinted.
+    let bytes = include_bytes!("../icons/tray-template@2x.png");
+    let image = tauri::image::Image::from_bytes(bytes).expect("tray template decodes");
+    assert_eq!((image.width(), image.height()), (44, 44));
+    let mut opaque = 0;
+    for p in image.rgba().chunks_exact(4) {
+        if p[3] > 0 {
+            opaque += 1;
+            assert!(p[0] < 16 && p[1] < 16 && p[2] < 16, "non-black pixel {p:?}");
+        }
+    }
+    assert!(opaque > 100, "template is almost empty");
+}

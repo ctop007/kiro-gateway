@@ -8,6 +8,7 @@
 pub mod fsutil;
 pub mod ps_profile;
 pub mod rc;
+pub mod rename;
 pub mod script;
 pub mod service;
 pub mod types;

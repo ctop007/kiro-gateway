@@ -1,4 +1,7 @@
 //! IPC types for the kclaude module (`KclaudeStatus` and friends).
+//!
+//! "kclaude" is the module and the feature name. The command the user types is
+//! `commandName` (`cclaude` by default) and appears in the status and in messages.
 
 use std::fmt;
 
@@ -39,7 +42,7 @@ pub enum FixAction {
     CopyCommand { label: String, command: String },
 }
 
-/// Outcome of running `type kclaude` in a fresh login shell.
+/// Outcome of running `type <command>` in a fresh login shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KclaudeVerify {
@@ -49,11 +52,11 @@ pub struct KclaudeVerify {
 }
 
 impl KclaudeVerify {
-    /// Verification was not run because kclaude is not installed.
-    pub fn skipped() -> Self {
+    /// Verification was not run because the command is not installed.
+    pub fn skipped(command: &str) -> Self {
         Self {
             status: VerifyStatus::Skipped,
-            detail: "还没有安装 kclaude".to_string(),
+            detail: format!("还没有安装 {command}"),
             fix: None,
         }
     }
@@ -63,6 +66,8 @@ impl KclaudeVerify {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KclaudeStatus {
+    /// The command name this status is about (equals `AppConfig.commandName`).
+    pub command_name: String,
     pub state: KclaudeState,
     pub shell: ShellKind,
     pub rc_files: Vec<String>,
@@ -114,6 +119,7 @@ mod tests {
     #[test]
     fn status_serializes_with_contract_field_names() {
         let status = KclaudeStatus {
+            command_name: "cclaude".to_string(),
             state: KclaudeState::NotInstalled,
             shell: ShellKind::Powershell,
             rc_files: vec!["~/a".to_string()],
@@ -128,6 +134,7 @@ mod tests {
             },
         };
         let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["commandName"], "cclaude");
         assert_eq!(value["state"], "not_installed");
         assert_eq!(value["shell"], "powershell");
         assert_eq!(value["rcFiles"][0], "~/a");
@@ -139,8 +146,9 @@ mod tests {
 
     #[test]
     fn skipped_verify_has_null_fix_key() {
-        let value = serde_json::to_value(KclaudeVerify::skipped()).unwrap();
+        let value = serde_json::to_value(KclaudeVerify::skipped("cclaude")).unwrap();
         assert_eq!(value["status"], "skipped");
+        assert_eq!(value["detail"], "还没有安装 cclaude");
         assert!(value.get("fix").is_some() && value["fix"].is_null());
     }
 

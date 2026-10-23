@@ -1,6 +1,8 @@
 /** Settings page helpers (pure). */
 import type { GatewayStatus } from '@/lib/ipc-types'
+import { DEFAULT_COMMAND_NAME } from '@/features/command-name/view'
 
+export const DEFAULT_PORT = 6868
 export const PORT_MIN = 1024
 export const PORT_MAX = 65535
 
@@ -18,9 +20,9 @@ export function parsePort(raw: string): PortParse {
   return { ok: true, port: n }
 }
 
-export function portHint(status: GatewayStatus | null): string {
+export function portHint(status: GatewayStatus | null, commandName: string = DEFAULT_COMMAND_NAME): string {
   const live = status?.state === 'running' || status?.state === 'starting'
-  return live ? '改完后重启网关生效，kclaude 会自动跟上' : '改完后下次打开开关时生效，kclaude 会自动跟上'
+  return live ? `改完后重启网关生效，${commandName} 会自动跟上` : `改完后下次打开开关时生效，${commandName} 会自动跟上`
 }
 
 /** Shown after `config_update` when the gateway is running and the port changed. */

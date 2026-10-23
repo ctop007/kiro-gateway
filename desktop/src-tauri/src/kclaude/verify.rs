@@ -1,6 +1,6 @@
-//! Post-install check: does a fresh login shell know `kclaude`?
+//! Post-install check: does a fresh login shell know the command (`cclaude` by default)?
 //!
-//! macOS: `$SHELL -lic 'type kclaude'` with a 5 second timeout, in the user's real HOME
+//! macOS: `$SHELL -lic 'type <command>'` with a 5 second timeout, in the user's real HOME
 //! (tests inject a temporary one and a fake shell). The shell and its children are killed
 //! when the timeout expires. Output is only classified; it is never copied into the
 //! result, so nothing from the user's startup files can reach the UI.
@@ -16,10 +16,18 @@ use super::types::{KclaudeVerify, VerifyStatus};
 
 /// Time a fresh login shell gets before the check is abandoned.
 pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Arguments of the check: login, interactive, run one command.
-pub const LOGIN_TYPE_ARGS: [&str; 2] = ["-lic", "type kclaude"];
 
-const MSG_NOT_FOUND: &str = "新开的终端里找不到 kclaude";
+/// Arguments of the check: login, interactive, `type <command>`.
+///
+/// `command` must already have passed the command-name validation (letters, digits, `-`,
+/// `_`), so it is safe to splice into the shell command line.
+pub fn login_type_args(command: &str) -> [String; 2] {
+    ["-lic".to_string(), format!("type {command}")]
+}
+
+fn msg_not_found(command: &str) -> String {
+    format!("新开的终端里找不到 {command}")
+}
 const MAX_CAPTURE: usize = 256 * 1024;
 
 /// What happened when the shell ran.
@@ -145,11 +153,11 @@ fn fail(detail: &str) -> KclaudeVerify {
     KclaudeVerify { status: VerifyStatus::Fail, detail: detail.to_string(), fix: None }
 }
 
-/// Classify the output of `type kclaude` from zsh or bash.
+/// Classify the output of `type <command>` from zsh or bash.
 ///
 /// Only a shell *function* counts: an alias or an executable with the same name would not
 /// carry the App's environment handling.
-pub fn verify_posix(outcome: &RunOutcome) -> KclaudeVerify {
+pub fn verify_posix(outcome: &RunOutcome, command: &str) -> KclaudeVerify {
     let stdout = match outcome {
         RunOutcome::SpawnFailed => return fail("没能启动终端做检查，请手动新开一个终端试试"),
         RunOutcome::TimedOut => {
@@ -157,31 +165,33 @@ pub fn verify_posix(outcome: &RunOutcome) -> KclaudeVerify {
         }
         RunOutcome::Finished { stdout, .. } => stdout,
     };
-    let Some(line) = stdout.lines().map(str::trim).find(|l| l.starts_with("kclaude is ")) else {
-        return fail(MSG_NOT_FOUND);
+    let prefix = format!("{command} is ");
+    let Some(line) = stdout.lines().map(str::trim).find(|l| l.starts_with(&prefix)) else {
+        return fail(&msg_not_found(command));
     };
-    let rest = &line["kclaude is ".len()..];
+    let rest = &line[prefix.len()..];
     if rest.starts_with("a function") || rest.starts_with("a shell function") {
-        KclaudeVerify { status: VerifyStatus::Ok, detail: "新开的终端里可以使用 kclaude".to_string(), fix: None }
+        KclaudeVerify { status: VerifyStatus::Ok, detail: format!("新开的终端里可以使用 {command}"), fix: None }
     } else if rest.starts_with("an alias") || rest.starts_with("aliased to") {
-        fail("新开的终端里 kclaude 被别名盖住了，检查启动文件里后面有没有 alias kclaude")
+        fail(&format!("新开的终端里 {command} 被别名盖住了，检查启动文件里后面有没有 alias {command}"))
     } else {
-        fail("新开的终端里 kclaude 是另一个同名命令，不是 App 装的那个")
+        fail(&format!("新开的终端里 {command} 是另一个同名命令，不是 App 装的那个"))
     }
 }
 
-/// Classify the output of a PowerShell `(Get-Command kclaude).CommandType` check.
+/// Classify the output of a PowerShell `(Get-Command <command>).CommandType` check.
 ///
 /// Args:
 ///     outcome: Result of running PowerShell.
+///     command: The command name that was checked.
 ///     policy_hint: Execution-policy problem found beforehand, if any; used to explain a
 ///         failure and to offer the copyable fix.
-pub fn verify_powershell(outcome: &RunOutcome, policy_hint: Option<PolicyHint>) -> KclaudeVerify {
+pub fn verify_powershell(outcome: &RunOutcome, command: &str, policy_hint: Option<PolicyHint>) -> KclaudeVerify {
     if let RunOutcome::Finished { stdout, .. } = outcome {
         if stdout.lines().any(|l| l.trim().eq_ignore_ascii_case("function")) {
             return KclaudeVerify {
                 status: VerifyStatus::Ok,
-                detail: "新开的终端里可以使用 kclaude".to_string(),
+                detail: format!("新开的终端里可以使用 {command}"),
                 fix: None,
             };
         }
@@ -192,7 +202,7 @@ pub fn verify_powershell(outcome: &RunOutcome, policy_hint: Option<PolicyHint>) 
     match outcome {
         RunOutcome::SpawnFailed => fail("没能启动 PowerShell 做检查，请手动新开一个终端试试"),
         RunOutcome::TimedOut => fail("新开的 PowerShell 5 秒内没有响应，检查 profile 里有没有会卡住的命令"),
-        RunOutcome::Finished { .. } => fail(MSG_NOT_FOUND),
+        RunOutcome::Finished { .. } => fail(&msg_not_found(command)),
     }
 }
 

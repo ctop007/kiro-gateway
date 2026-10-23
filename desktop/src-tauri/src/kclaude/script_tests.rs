@@ -133,10 +133,16 @@ impl Sandbox {
         self.marker.exists()
     }
 
-    /// Install the script for `kind`, then run `body` in `shell -c` after sourcing it.
+    /// Install the script for `kind` under the command name `kclaude`, then run `body` in
+    /// `shell -c` after sourcing it.
     fn run(&self, shell: &str, kind: ScriptKind, extra_env: &[(&str, &str)], body: &str) -> RunResult {
-        install(kind, &self.data_dir).unwrap();
-        let script = self.data_dir.join(kind.file_name());
+        self.run_as("kclaude", shell, kind, extra_env, body)
+    }
+
+    /// Like [`run`](Self::run) with the script installed for the command `command`.
+    fn run_as(&self, command: &str, shell: &str, kind: ScriptKind, extra_env: &[(&str, &str)], body: &str) -> RunResult {
+        install(kind, command, &self.data_dir).unwrap();
+        let script = self.data_dir.join(kind.file_name(command));
         let program = format!("source '{}'\n{}", script.display(), body);
         let path = format!("{}:/usr/bin:/bin", self.bin_dir.display());
         let mut cmd = Command::new(format!("/bin/{shell}"));
@@ -412,8 +418,8 @@ fn data_dir_with_quotes_and_dollar_signs_is_quoted_correctly() {
         let odd = tmp.path().join("it's $HOME `x` dir");
         fs::create_dir_all(&odd).unwrap();
         fs::write(odd.join("kclaude.env"), "KIRO_GATEWAY_PORT=1\n").unwrap();
-        install(kind, &odd).unwrap();
-        let program = format!("source '{}'\nkclaude", odd.join(kind.file_name()).to_string_lossy().replace('\'', "'\\''"));
+        install(kind, "kclaude", &odd).unwrap();
+        let program = format!("source '{}'\nkclaude", odd.join(kind.file_name("kclaude")).to_string_lossy().replace('\'', "'\\''"));
         let out = Command::new(format!("/bin/{shell}"))
             .arg("-c")
             .arg(program)
@@ -508,10 +514,98 @@ fn no_proxy_is_set_when_the_user_had_none_and_does_not_leak_into_the_shell() {
 
 #[test]
 fn powershell_script_probes_without_a_proxy_and_extends_no_proxy() {
-    let ps1 = include_str!("templates/kclaude.ps1");
+    let ps1 = include_str!("templates/command.ps1");
     assert!(ps1.contains("HttpClient"), "health probe must use a proxy-free HttpClient");
     assert!(ps1.contains("UseProxy"), "health probe must disable the proxy");
     assert!(!ps1.contains("Invoke-RestMethod -"), "Invoke-RestMethod honours the system proxy on PS5");
     assert!(ps1.contains("'NO_PROXY'") && ps1.contains("'no_proxy'"));
     assert!(ps1.contains("127.0.0.1,localhost"));
+}
+
+// ---- a command name other than kclaude (task 10.1) ------------------------------------------------
+
+#[test]
+fn a_renamed_command_runs_and_the_old_name_does_not_exist() {
+    for (shell, kind) in SHELLS {
+        let server = HealthServer::start();
+        let sb = Sandbox::new();
+        sb.write_env(&Sandbox::env_for(server.port));
+        let r = sb.run_as("cclaude", shell, kind, &[], "cclaude --version\necho ---\ntype kclaude 2>&1 | head -1");
+        assert_eq!(r.code, 0, "{shell}: {}", r.stderr);
+        assert_eq!(line_value(&r.stdout, "CLAUDE_ARGS"), Some("--version"), "{shell}: {}", r.stdout);
+        assert_eq!(
+            line_value(&r.stdout, "BASE_URL"),
+            Some(format!("http://127.0.0.1:{}", server.port).as_str()),
+            "{shell}"
+        );
+        let after = r.stdout.split("---").nth(1).unwrap_or("");
+        assert!(after.contains("not found") || after.contains("no such"), "{shell}: old name still resolves: {after}");
+    }
+}
+
+#[test]
+fn error_messages_carry_the_command_name_as_prefix() {
+    for (shell, kind) in SHELLS {
+        for name in ["cclaude", "kclaude-test", "my_cc"] {
+            // No env file: the "no config" message.
+            let sb = Sandbox::new();
+            let r = sb.run_as(name, shell, kind, &[], &format!("{name} hello"));
+            assert_ne!(r.code, 0, "{shell} {name}");
+            assert!(r.stderr.contains(&format!("{name}: {MSG_NO_CONFIG}")), "{shell} {name}: {}", r.stderr);
+            assert!(!r.stderr.contains("kclaude: ") || name == "kclaude-test" && r.stderr.contains("kclaude-test: "), "{shell} {name}: {}", r.stderr);
+
+            // Gateway not running.
+            let sb = Sandbox::new();
+            sb.write_env(&Sandbox::env_for(free_port()));
+            let r = sb.run_as(name, shell, kind, &[], name);
+            assert!(r.stderr.contains(&format!("{name}: {MSG_NOT_RUNNING}")), "{shell} {name}: {}", r.stderr);
+            assert!(!sb.claude_called(), "{shell} {name}");
+
+            // Forced upgrade.
+            let sb = Sandbox::new();
+            sb.write_env(&Sandbox::env_for(free_port()).replace("UPGRADE_REQUIRED=0", "UPGRADE_REQUIRED=1"));
+            let r = sb.run_as(name, shell, kind, &[], name);
+            assert!(r.stderr.contains(&format!("{name}: {MSG_UPGRADE}")), "{shell} {name}: {}", r.stderr);
+        }
+    }
+}
+
+#[test]
+fn the_new_command_line_in_kclaude_env_is_ignored_by_the_scripts() {
+    // KIRO_GATEWAY_COMMAND is informational; the function name is baked into the script.
+    for (shell, kind) in SHELLS {
+        let server = HealthServer::start();
+        let sb = Sandbox::new();
+        sb.write_env(&format!("{}KIRO_GATEWAY_COMMAND=cclaude\n", Sandbox::env_for(server.port)));
+        let r = sb.run_as("kclaude-test", shell, kind, &[], "kclaude-test hi");
+        assert_eq!(r.code, 0, "{shell}: {}", r.stderr);
+        assert_eq!(line_value(&r.stdout, "CLAUDE_ARGS"), Some("hi"), "{shell}");
+    }
+}
+
+#[test]
+fn two_commands_with_different_names_coexist_in_one_shell() {
+    for (shell, kind) in SHELLS {
+        let server = HealthServer::start();
+        let sb = Sandbox::new();
+        sb.write_env(&Sandbox::env_for(server.port));
+        install(kind, "kclaude-test", &sb.data_dir).unwrap();
+        let other = sb.data_dir.join(kind.file_name("kclaude-test"));
+        let body = format!("source '{}'\ncclaude one\nkclaude-test two\n", other.display());
+        let r = sb.run_as("cclaude", shell, kind, &[], &body);
+        assert_eq!(r.code, 0, "{shell}: {}", r.stderr);
+        let args: Vec<&str> = r.stdout.lines().filter_map(|l| l.strip_prefix("CLAUDE_ARGS=")).collect();
+        assert_eq!(args, vec!["one", "two"], "{shell}");
+    }
+}
+
+#[test]
+fn powershell_template_uses_the_placeholder_for_function_and_prefix() {
+    let ps1 = include_str!("templates/command.ps1");
+    assert!(ps1.contains("function @@KCLAUDE_COMMAND@@ {"));
+    assert!(ps1.contains("WriteLine(\"@@KCLAUDE_COMMAND@@: $Message\")"));
+    for tpl in [include_str!("templates/command.zsh"), include_str!("templates/command.bash"), ps1] {
+        assert!(!tpl.lines().any(|l| l.trim_start().starts_with("kclaude()")), "no hard-coded function name");
+        assert!(!tpl.contains("\"kclaude: "), "no hard-coded error prefix");
+    }
 }

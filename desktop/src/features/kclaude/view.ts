@@ -1,5 +1,6 @@
-/** kclaude status and model options → panel text and buttons (pure). */
+/** kclaude status and model options → panel text and buttons (pure). Every sentence uses the current command name. */
 import type { FixAction, KclaudeStatus } from '@/lib/ipc-types'
+import { DEFAULT_COMMAND_NAME } from '@/features/command-name/view'
 
 export type KclaudeActionId = 'install' | 'adopt'
 
@@ -12,7 +13,7 @@ export interface KclaudeAction {
 export interface KclaudeView {
   tone: '' | 'warn'
   text: string
-  /** Text next to the `kclaude` command chip. */
+  /** Text next to the command chip. */
   hint: string
   actions: KclaudeAction[]
   canRemove: boolean
@@ -21,30 +22,36 @@ export interface KclaudeView {
 
 const USAGE_HINT = '用法和 claude 一样'
 
-function foreignText(files: string[]): string {
+function foreignText(files: string[], name: string): string {
   const where = files.length > 0 ? `${files.join('、')} 里` : '启动文件里'
-  return `${where}已经有一个你自己加的 kclaude，App 没有改动它。`
+  return `${where}已经有一个你自己加的 ${name}，App 没有改动它。`
 }
 
 /**
  * @param status  latest `kclaude_status`; null before the first answer
  * @param gatewayRunning  whether the gateway is `running` (changes the ready sentence)
+ * @param commandName  the current command name (`AppConfig.commandName`); defaults to the status's own, then `cclaude`
  */
-export function kclaudeView(status: KclaudeStatus | null, gatewayRunning: boolean): KclaudeView {
+export function kclaudeView(
+  status: KclaudeStatus | null,
+  gatewayRunning: boolean,
+  commandName?: string
+): KclaudeView {
+  const name = commandName?.trim() || status?.commandName?.trim() || DEFAULT_COMMAND_NAME
   if (!status) {
-    return { tone: '', text: '正在检查 kclaude', hint: USAGE_HINT, actions: [], canRemove: false, verifyLine: null }
+    return { tone: '', text: `正在检查 ${name}`, hint: USAGE_HINT, actions: [], canRemove: false, verifyLine: null }
   }
 
   const verifyLine =
     status.verify.status === 'fail'
-      ? { text: status.verify.detail.trim() || '新开的终端里没能找到 kclaude', fix: status.verify.fix }
+      ? { text: status.verify.detail.trim() || `新开的终端里没能找到 ${name}`, fix: status.verify.fix }
       : null
 
   switch (status.state) {
     case 'foreign':
       return {
         tone: 'warn',
-        text: foreignText(status.rcFiles),
+        text: foreignText(status.rcFiles, name),
         hint: '当前用的是你自己的版本',
         actions: [{ id: 'adopt', label: '改由 App 管理', primary: false }],
         canRemove: false,
@@ -53,7 +60,7 @@ export function kclaudeView(status: KclaudeStatus | null, gatewayRunning: boolea
     case 'not_installed':
       return {
         tone: '',
-        text: '还没有安装 kclaude。',
+        text: `还没有安装 ${name}。`,
         hint: USAGE_HINT,
         actions: [{ id: 'install', label: '安装', primary: true }],
         canRemove: false,
@@ -62,7 +69,7 @@ export function kclaudeView(status: KclaudeStatus | null, gatewayRunning: boolea
     case 'outdated':
       return {
         tone: '',
-        text: 'kclaude 的内容不是最新的，重新安装一次就好。',
+        text: `${name} 的内容不是最新的，重新安装一次就好。`,
         hint: USAGE_HINT,
         actions: [{ id: 'install', label: '重新安装', primary: true }],
         canRemove: true,

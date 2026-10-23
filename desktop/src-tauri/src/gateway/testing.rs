@@ -38,8 +38,8 @@ const RECENT_WINDOW: usize = 64;
 ///
 /// Fake sidecars of concurrent tests (and of other test binaries running at the same
 /// time) used to share 8100..=8199 and occasionally answered each other's health probes.
-/// The ephemeral range never contains 8000 (the user's own gateway) nor the 81xx ports
-/// used for manual verification.
+/// The ephemeral range never contains 6868 / 8000 (the App's default port and the user's own
+/// gateway) nor the 81xx ports used for manual verification.
 pub fn free_port() -> u16 {
     let mut recent = RECENT.lock().unwrap_or_else(|p| p.into_inner());
     for _ in 0..200 {

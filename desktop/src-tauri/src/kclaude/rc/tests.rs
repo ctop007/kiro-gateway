@@ -12,12 +12,15 @@ fn block() -> String {
     block_text(Dialect::Posix, Path::new(SCRIPT))
 }
 
+/// Command name used by most tests; the foreign-detection fixtures are written for it.
+const CMD: &str = "kclaude";
+
 fn install(bytes: &[u8]) -> Option<Vec<u8>> {
-    plan_install(bytes, Dialect::Posix, &block()).unwrap()
+    plan_install(bytes, Dialect::Posix, CMD, &block()).unwrap()
 }
 
 fn state(bytes: &[u8]) -> RcState {
-    analyze(bytes, Dialect::Posix).state(&block())
+    analyze(bytes, Dialect::Posix, CMD).state(&block())
 }
 
 fn s(bytes: &[u8]) -> String {
@@ -69,8 +72,8 @@ fn existing_content_is_kept_and_block_is_appended() {
 fn file_without_trailing_newline_gets_a_separating_newline_and_stays_invertible() {
     let original = b"export A=1";
     let out = install(original).unwrap();
-    assert!(s(&out).starts_with("export A=1\n# >>> kiro-gateway-desktop kclaude >>>\n"));
-    assert_eq!(plan_remove(&out, Dialect::Posix).unwrap().unwrap(), original);
+    assert!(s(&out).starts_with("export A=1\n# >>> kiro-gateway-desktop command >>>\n"));
+    assert_eq!(plan_remove(&out, Dialect::Posix, CMD).unwrap().unwrap(), original);
 }
 
 #[test]
@@ -80,7 +83,7 @@ fn crlf_files_get_crlf_block_lines() {
     let tail = &out[original.len()..];
     assert!(s(tail).contains("\r\n") && !s(tail).replace("\r\n", "").contains('\n'), "{:?}", s(tail));
     assert_eq!(state(&out), RcState::Installed);
-    assert_eq!(plan_remove(&out, Dialect::Posix).unwrap().unwrap(), original);
+    assert_eq!(plan_remove(&out, Dialect::Posix, CMD).unwrap().unwrap(), original);
 }
 
 #[test]
@@ -90,7 +93,7 @@ fn non_utf8_bytes_elsewhere_in_the_file_are_preserved() {
     assert!(out.starts_with(&original));
     original.extend_from_slice(block().as_bytes());
     assert_eq!(out, original);
-    assert_eq!(plan_remove(&out, Dialect::Posix).unwrap().unwrap(), b"# caf\xe9 latin-1 comment\nexport A=1\n");
+    assert_eq!(plan_remove(&out, Dialect::Posix, CMD).unwrap().unwrap(), b"# caf\xe9 latin-1 comment\nexport A=1\n");
 }
 
 // --- installed latest: no write ------------------------------------------------------------
@@ -150,9 +153,9 @@ fn duplicate_blocks_collapse_into_one() {
 fn begin_without_end_is_damaged_and_nothing_is_planned() {
     let text = format!("a\n{BEGIN_MARKER}\nsource x\n");
     assert_eq!(state(text.as_bytes()), RcState::Damaged);
-    assert_eq!(plan_install(text.as_bytes(), Dialect::Posix, &block()), Err(Refusal::Damaged));
-    assert_eq!(plan_remove(text.as_bytes(), Dialect::Posix), Err(Refusal::Damaged));
-    assert_eq!(plan_adopt(text.as_bytes(), Dialect::Posix, &block()), Err(Refusal::Damaged));
+    assert_eq!(plan_install(text.as_bytes(), Dialect::Posix, CMD, &block()), Err(Refusal::Damaged));
+    assert_eq!(plan_remove(text.as_bytes(), Dialect::Posix, CMD), Err(Refusal::Damaged));
+    assert_eq!(plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()), Err(Refusal::Damaged));
 }
 
 #[test]
@@ -171,7 +174,7 @@ fn end_without_begin_and_nested_begins_are_damaged() {
 fn foreign_source_of_the_repo_script_is_detected_and_not_written() {
     let text = b"export A=1\nsource \"$HOME/kiro-gateway/scripts/kclaude.zsh\"\n";
     assert_eq!(state(text), RcState::Foreign);
-    assert_eq!(plan_install(text, Dialect::Posix, &block()), Err(Refusal::Foreign));
+    assert_eq!(plan_install(text, Dialect::Posix, CMD, &block()), Err(Refusal::Foreign));
 }
 
 #[test]
@@ -226,15 +229,15 @@ fn a_kclaude_mention_inside_our_own_block_is_not_foreign() {
 fn foreign_beats_an_existing_marker_block() {
     let text = format!("source ~/x/kclaude.zsh\n{}", block());
     assert_eq!(state(text.as_bytes()), RcState::Foreign);
-    assert_eq!(plan_install(text.as_bytes(), Dialect::Posix, &block()), Err(Refusal::Foreign));
+    assert_eq!(plan_install(text.as_bytes(), Dialect::Posix, CMD, &block()), Err(Refusal::Foreign));
 }
 
 #[test]
 fn foreign_function_with_braces_in_strings_and_comments_is_delimited() {
     let text = "kclaude() {\n  echo \"}\" # {\n  claude\n}\nexport AFTER=1\n";
-    let a = analyze(text.as_bytes(), Dialect::Posix);
+    let a = analyze(text.as_bytes(), Dialect::Posix, CMD);
     assert_eq!(a.foreign_line_numbers(), vec![1]);
-    let out = plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap();
+    let out = plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap();
     let out = s(&out);
     assert!(out.contains("# disabled by Kiro Gateway App: kclaude() {\n"), "{out}");
     assert!(out.contains("# disabled by Kiro Gateway App: }\nexport AFTER=1\n"), "{out}");
@@ -244,7 +247,7 @@ fn foreign_function_with_braces_in_strings_and_comments_is_delimited() {
 fn unbalanced_foreign_function_cannot_be_adopted() {
     let text = "kclaude() {\n  claude\n";
     assert_eq!(state(text.as_bytes()), RcState::Foreign);
-    assert_eq!(plan_adopt(text.as_bytes(), Dialect::Posix, &block()), Err(Refusal::UnparsableForeign));
+    assert_eq!(plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()), Err(Refusal::UnparsableForeign));
 }
 
 // --- adopt ---------------------------------------------------------------------------------
@@ -252,7 +255,7 @@ fn unbalanced_foreign_function_cannot_be_adopted() {
 #[test]
 fn adopt_comments_out_the_old_line_then_appends_the_block() {
     let text = "export A=1\nsource \"$HOME/kiro-gateway/scripts/kclaude.zsh\"\nexport B=2\n";
-    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap());
+    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap());
     assert_eq!(
         out,
         format!(
@@ -266,7 +269,7 @@ fn adopt_comments_out_the_old_line_then_appends_the_block() {
 #[test]
 fn adopt_comments_out_every_line_of_a_multiline_function_and_alias() {
     let text = "alias kclaude=claude\nkclaude() {\n  claude\n}\n";
-    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap());
+    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap());
     assert!(out.starts_with(
         "# disabled by Kiro Gateway App: alias kclaude=claude\n# disabled by Kiro Gateway App: kclaude() {\n  # disabled by Kiro Gateway App: claude\n# disabled by Kiro Gateway App: }\n"
     ), "{out}");
@@ -276,14 +279,14 @@ fn adopt_comments_out_every_line_of_a_multiline_function_and_alias() {
 #[test]
 fn adopt_keeps_indentation_and_uses_a_null_command_for_indented_lines() {
     let text = "if true; then\n  source ~/x/kclaude.zsh\nfi\n";
-    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap());
+    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap());
     assert!(out.contains("\n  : # disabled by Kiro Gateway App: source ~/x/kclaude.zsh\nfi\n"), "{out}");
 }
 
 #[test]
 fn adopt_preserves_a_missing_trailing_newline_and_crlf() {
     let text = b"export A=1\r\nsource ~/x/kclaude.zsh";
-    let out = plan_adopt(text, Dialect::Posix, &block()).unwrap().unwrap();
+    let out = plan_adopt(text, Dialect::Posix, CMD, &block()).unwrap().unwrap();
     let out = s(&out);
     assert!(out.starts_with("export A=1\r\n# disabled by Kiro Gateway App: source ~/x/kclaude.zsh\r\n# >>>"), "{out:?}");
 }
@@ -291,21 +294,21 @@ fn adopt_preserves_a_missing_trailing_newline_and_crlf() {
 #[test]
 fn adopt_on_an_installed_file_without_foreign_is_a_no_op() {
     let text = install(b"export A=1\n").unwrap();
-    assert!(plan_adopt(&text, Dialect::Posix, &block()).unwrap().is_none());
+    assert!(plan_adopt(&text, Dialect::Posix, CMD, &block()).unwrap().is_none());
 }
 
 #[test]
 fn adopt_when_block_already_present_only_comments_the_foreign_line() {
     let text = format!("source ~/x/kclaude.zsh\n{}", block());
-    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap());
+    let out = s(&plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap());
     assert_eq!(out, format!("# disabled by Kiro Gateway App: source ~/x/kclaude.zsh\n{}", block()));
 }
 
 #[test]
 fn adopt_then_remove_leaves_only_the_commented_lines() {
     let text = "a\nsource ~/x/kclaude.zsh\nb\n";
-    let adopted = plan_adopt(text.as_bytes(), Dialect::Posix, &block()).unwrap().unwrap();
-    let removed = s(&plan_remove(&adopted, Dialect::Posix).unwrap().unwrap());
+    let adopted = plan_adopt(text.as_bytes(), Dialect::Posix, CMD, &block()).unwrap().unwrap();
+    let removed = s(&plan_remove(&adopted, Dialect::Posix, CMD).unwrap().unwrap());
     assert_eq!(removed, "a\n# disabled by Kiro Gateway App: source ~/x/kclaude.zsh\nb\n");
 }
 
@@ -330,7 +333,7 @@ fn remove_is_the_exact_inverse_of_install_for_many_shapes() {
     for original in originals {
         match install(original) {
             Some(installed) => {
-                let removed = plan_remove(&installed, Dialect::Posix).unwrap().unwrap();
+                let removed = plan_remove(&installed, Dialect::Posix, CMD).unwrap().unwrap();
                 assert_eq!(removed, original, "original={:?}", String::from_utf8_lossy(original));
             }
             None => panic!("expected an install plan"),
@@ -341,27 +344,27 @@ fn remove_is_the_exact_inverse_of_install_for_many_shapes() {
 #[test]
 fn remove_deletes_a_block_in_the_middle_and_keeps_the_rest_verbatim() {
     let text = format!("top  \n\n{}\n\tbottom\n", block());
-    let removed = plan_remove(text.as_bytes(), Dialect::Posix).unwrap().unwrap();
+    let removed = plan_remove(text.as_bytes(), Dialect::Posix, CMD).unwrap().unwrap();
     assert_eq!(s(&removed), "top  \n\n\n\tbottom\n");
 }
 
 #[test]
 fn remove_without_a_block_plans_nothing() {
-    assert_eq!(plan_remove(b"export A=1\n", Dialect::Posix), Ok(None));
-    assert_eq!(plan_remove(b"", Dialect::Posix), Ok(None));
+    assert_eq!(plan_remove(b"export A=1\n", Dialect::Posix, CMD), Ok(None));
+    assert_eq!(plan_remove(b"", Dialect::Posix, CMD), Ok(None));
 }
 
 #[test]
 fn remove_deletes_every_duplicate_block() {
     let text = format!("a\n{}b\n{}c\n", block(), block());
-    let removed = plan_remove(text.as_bytes(), Dialect::Posix).unwrap().unwrap();
+    let removed = plan_remove(text.as_bytes(), Dialect::Posix, CMD).unwrap().unwrap();
     assert_eq!(s(&removed), "a\nb\nc\n");
 }
 
 #[test]
 fn remove_works_even_when_a_foreign_kclaude_is_present() {
     let text = format!("source ~/x/kclaude.zsh\n{}", block());
-    let removed = plan_remove(text.as_bytes(), Dialect::Posix).unwrap().unwrap();
+    let removed = plan_remove(text.as_bytes(), Dialect::Posix, CMD).unwrap().unwrap();
     assert_eq!(s(&removed), "source ~/x/kclaude.zsh\n");
 }
 
@@ -382,11 +385,11 @@ fn powershell_foreign_forms_are_detected() {
     ];
     for case in cases {
         let text = format!("{case}\n");
-        assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell).state(&ps_block), RcState::Foreign, "{case}");
+        assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell, CMD).state(&ps_block), RcState::Foreign, "{case}");
     }
     for ok in ["# function kclaude {}", "Write-Host kclaude", "function kclaude-helper { }"] {
         let text = format!("{ok}\n");
-        assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell).state(&ps_block), RcState::NotInstalled, "{ok}");
+        assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell, CMD).state(&ps_block), RcState::NotInstalled, "{ok}");
     }
 }
 
@@ -394,9 +397,9 @@ fn powershell_foreign_forms_are_detected() {
 fn powershell_install_and_remove_round_trip() {
     let b = block_text(Dialect::PowerShell, Path::new(r"C:\k\kclaude.ps1"));
     let original = b"Set-Alias ll Get-ChildItem\r\n";
-    let out = plan_install(original, Dialect::PowerShell, &b).unwrap().unwrap();
-    assert_eq!(analyze(&out, Dialect::PowerShell).state(&b), RcState::Installed);
-    assert_eq!(plan_remove(&out, Dialect::PowerShell).unwrap().unwrap(), original);
+    let out = plan_install(original, Dialect::PowerShell, CMD, &b).unwrap().unwrap();
+    assert_eq!(analyze(&out, Dialect::PowerShell, CMD).state(&b), RcState::Installed);
+    assert_eq!(plan_remove(&out, Dialect::PowerShell, CMD).unwrap().unwrap(), original);
 }
 
 // --- shell and file selection --------------------------------------------------------------
@@ -557,11 +560,11 @@ fn full_cycle_on_disk_install_adopt_remove_keeps_unrelated_bytes() {
     fs::write(&rc, original).unwrap();
 
     // install is refused while the foreign line exists
-    assert_eq!(plan_install(&read_rc(&rc).unwrap(), Dialect::Posix, &block()), Err(Refusal::Foreign));
+    assert_eq!(plan_install(&read_rc(&rc).unwrap(), Dialect::Posix, CMD, &block()), Err(Refusal::Foreign));
     assert_eq!(fs::read(&rc).unwrap(), original);
 
     // adopt, then verify the file is installed
-    let adopted = plan_adopt(&read_rc(&rc).unwrap(), Dialect::Posix, &block()).unwrap().unwrap();
+    let adopted = plan_adopt(&read_rc(&rc).unwrap(), Dialect::Posix, CMD, &block()).unwrap().unwrap();
     apply(&rc, &adopted, STAMP).unwrap();
     assert_eq!(state(&fs::read(&rc).unwrap()), RcState::Installed);
     assert_eq!(fs::read(home.path().join(".zshrc.bak-kiro-gateway-20261022-101500")).unwrap(), original);
@@ -570,9 +573,157 @@ fn full_cycle_on_disk_install_adopt_remove_keeps_unrelated_bytes() {
     assert!(install(&fs::read(&rc).unwrap()).is_none());
 
     // remove: only the block disappears
-    let removed = plan_remove(&fs::read(&rc).unwrap(), Dialect::Posix).unwrap().unwrap();
+    let removed = plan_remove(&fs::read(&rc).unwrap(), Dialect::Posix, CMD).unwrap().unwrap();
     assert_eq!(
         s(&removed),
         "# my zshrc\nexport EDITOR=vim\n# disabled by Kiro Gateway App: source \"$HOME/kiro-gateway/scripts/kclaude.zsh\"\nprompt pure\n"
     );
+}
+
+// --- command name and legacy markers (task 10.1) -------------------------------------------
+
+fn block_for(name: &str) -> String {
+    block_text(Dialect::Posix, Path::new(&format!("/d/{name}.zsh")))
+}
+
+fn state_for(bytes: &[u8], name: &str) -> RcState {
+    analyze(bytes, Dialect::Posix, name).state(&block_for(name))
+}
+
+fn legacy_block() -> String {
+    format!("{LEGACY_BEGIN_MARKER}\n[ -r '/old/kclaude.zsh' ] && source '/old/kclaude.zsh'\n{LEGACY_END_MARKER}\n")
+}
+
+#[test]
+fn markers_use_the_command_wording_and_the_legacy_ones_keep_the_old_wording() {
+    assert_eq!(BEGIN_MARKER, "# >>> kiro-gateway-desktop command >>>");
+    assert_eq!(END_MARKER, "# <<< kiro-gateway-desktop command <<<");
+    assert_eq!(LEGACY_BEGIN_MARKER, "# >>> kiro-gateway-desktop kclaude >>>");
+    assert_eq!(LEGACY_END_MARKER, "# <<< kiro-gateway-desktop kclaude <<<");
+}
+
+#[test]
+fn legacy_block_is_ours_not_foreign_and_counts_as_outdated() {
+    let text = format!("export A=1\n{}export B=2\n", legacy_block());
+    assert_eq!(state_for(text.as_bytes(), "kclaude"), RcState::Outdated);
+    assert_eq!(state_for(text.as_bytes(), "cclaude"), RcState::Outdated);
+}
+
+#[test]
+fn legacy_block_is_replaced_in_place_by_the_current_block_and_nothing_else_moves() {
+    let text = format!("export A=1\n{}export B=2\n", legacy_block());
+    let out = plan_install(text.as_bytes(), Dialect::Posix, "cclaude", &block_for("cclaude")).unwrap().unwrap();
+    assert_eq!(s(&out), format!("export A=1\n{}export B=2\n", block_for("cclaude")));
+    assert!(!s(&out).contains("kiro-gateway-desktop kclaude"));
+    assert_eq!(state_for(&out, "cclaude"), RcState::Installed);
+}
+
+#[test]
+fn legacy_block_at_end_of_file_without_newline_stays_without_newline() {
+    let text = format!("a\n{}", legacy_block().trim_end_matches('\n'));
+    let out = plan_install(text.as_bytes(), Dialect::Posix, "cclaude", &block_for("cclaude")).unwrap().unwrap();
+    assert_eq!(s(&out), format!("a\n{}", block_for("cclaude").trim_end_matches('\n')));
+}
+
+#[test]
+fn legacy_plus_current_block_collapse_into_one_current_block() {
+    let text = format!("{}mid\n{}", legacy_block(), block_for("cclaude"));
+    let out = plan_install(text.as_bytes(), Dialect::Posix, "cclaude", &block_for("cclaude")).unwrap().unwrap();
+    assert_eq!(s(&out), format!("{}mid\n", block_for("cclaude")));
+}
+
+#[test]
+fn remove_deletes_a_legacy_block_and_keeps_every_other_byte() {
+    let text = format!("export A=1\n{}export B=2\n", legacy_block());
+    let out = plan_remove(text.as_bytes(), Dialect::Posix, "cclaude").unwrap().unwrap();
+    assert_eq!(s(&out), "export A=1\nexport B=2\n");
+}
+
+#[test]
+fn mixed_generation_markers_are_damaged() {
+    for text in [
+        format!("{LEGACY_BEGIN_MARKER}\nx\n{END_MARKER}\n"),
+        format!("{BEGIN_MARKER}\nx\n{LEGACY_END_MARKER}\n"),
+        format!("{LEGACY_END_MARKER}\n"),
+        format!("{LEGACY_BEGIN_MARKER}\nx\n"),
+    ] {
+        assert_eq!(state_for(text.as_bytes(), "cclaude"), RcState::Damaged, "{text}");
+        assert_eq!(plan_remove(text.as_bytes(), Dialect::Posix, "cclaude"), Err(Refusal::Damaged), "{text}");
+    }
+}
+
+#[test]
+fn foreign_detection_follows_the_current_command_name() {
+    // The user's own `source .../scripts/kclaude.zsh` defines kclaude, not cclaude.
+    let manual = "source \"$HOME/work/scripts/kclaude.zsh\"\n";
+    assert_eq!(state_for(manual.as_bytes(), "kclaude"), RcState::Foreign);
+    assert_eq!(state_for(manual.as_bytes(), "cclaude"), RcState::NotInstalled);
+    for (text, name) in [
+        ("alias cclaude='claude --x'\n", "cclaude"),
+        ("cclaude() { claude; }\n", "cclaude"),
+        ("function cclaude { claude; }\n", "cclaude"),
+        ("source ~/x/cclaude.zsh\n", "cclaude"),
+        ("alias kclaude-test=claude\n", "kclaude-test"),
+        ("[ -f ~/x/my_cc.zsh ] && source ~/x/my_cc.zsh\n", "my_cc"),
+    ] {
+        assert_eq!(state_for(text.as_bytes(), name), RcState::Foreign, "{text}");
+    }
+}
+
+#[test]
+fn a_name_that_merely_contains_another_name_is_not_a_match() {
+    // `kclaude-test` is a different command from `kclaude` and from `claude`.
+    for (text, name) in [
+        ("source ~/x/kclaude-test.zsh\n", "kclaude"),
+        ("alias kclaude-test=claude\n", "kclaude"),
+        ("kclaude_helper() { :; }\n", "kclaude"),
+        ("source ~/x/xkclaude.zsh\n", "kclaude"),
+        ("source ~/x/kclaude.zsh\n", "kclaude-test"),
+        ("alias cclaude=claude\n", "cclaude2"),
+        ("source ~/.nvm/nvm.sh\n", "cclaude"),
+    ] {
+        assert_eq!(state_for(text.as_bytes(), name), RcState::NotInstalled, "{text} for {name}");
+    }
+}
+
+#[test]
+fn source_of_a_path_that_ends_in_the_name_is_still_recognised() {
+    for text in [
+        "source ~/x/kclaude\n",
+        "source \"$HOME/x/kclaude.zsh\"\n",
+        ". /x/kclaude.bash\n",
+        "source ~/kclaude/init.sh\n",
+    ] {
+        assert_eq!(state_for(text.as_bytes(), "kclaude"), RcState::Foreign, "{text}");
+    }
+}
+
+#[test]
+fn a_foreign_old_command_does_not_block_installing_a_new_name_and_is_left_untouched() {
+    let original = "export A=1\nsource \"$HOME/work/scripts/kclaude.zsh\"\nexport B=2\n";
+    let out = plan_install(original.as_bytes(), Dialect::Posix, "cclaude", &block_for("cclaude")).unwrap().unwrap();
+    assert_eq!(s(&out), format!("{original}{}", block_for("cclaude")));
+    assert_eq!(state_for(&out, "cclaude"), RcState::Installed);
+    assert_eq!(plan_remove(&out, Dialect::Posix, "cclaude").unwrap().unwrap(), original.as_bytes());
+}
+
+#[test]
+fn powershell_foreign_detection_follows_the_command_name_case_insensitively() {
+    let b = block_text(Dialect::PowerShell, Path::new(r"C:\k\cclaude.ps1"));
+    for case in ["function CClaude { claude @args }", "Set-Alias cclaude claude", ". C:\\tools\\cclaude.ps1"] {
+        let text = format!("{case}\n");
+        assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell, "cclaude").state(&b), RcState::Foreign, "{case}");
+    }
+    let text = "function kclaude { claude @args }\n";
+    assert_eq!(analyze(text.as_bytes(), Dialect::PowerShell, "cclaude").state(&b), RcState::NotInstalled);
+}
+
+#[test]
+fn legacy_block_in_powershell_is_replaced_too() {
+    let b = block_text(Dialect::PowerShell, Path::new(r"C:\k\cclaude.ps1"));
+    let text = format!("Set-Alias ll Get-ChildItem\r\n{LEGACY_BEGIN_MARKER}\r\nold\r\n{LEGACY_END_MARKER}\r\n");
+    let out = plan_install(text.as_bytes(), Dialect::PowerShell, "cclaude", &b).unwrap().unwrap();
+    let out = s(&out);
+    assert!(out.starts_with("Set-Alias ll Get-ChildItem\r\n# >>> kiro-gateway-desktop command >>>\r\n"), "{out:?}");
+    assert!(!out.contains("old") && !out.contains(LEGACY_BEGIN_MARKER));
 }

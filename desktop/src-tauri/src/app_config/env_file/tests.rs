@@ -6,17 +6,42 @@ use tempfile::tempdir;
 const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test]
-fn renders_the_six_lines_in_a_fixed_order() {
+fn renders_the_seven_lines_in_a_fixed_order() {
     let text = render(&AppConfig::default(), KEY);
     let expected = format!(
-        "KIRO_GATEWAY_PORT=8000\n\
+        "KIRO_GATEWAY_PORT=6868\n\
          KIRO_GATEWAY_KEY={KEY}\n\
          KCLAUDE_OPUS_MODEL=claude-opus-5-5[1m]\n\
          KCLAUDE_SONNET_MODEL=claude-sonnet-5-5[1m]\n\
          KCLAUDE_HAIKU_MODEL=claude-haiku-4-5\n\
-         KIRO_GATEWAY_UPGRADE_REQUIRED=0\n"
+         KIRO_GATEWAY_UPGRADE_REQUIRED=0\n\
+         KIRO_GATEWAY_COMMAND=cclaude\n"
     );
     assert_eq!(text, expected);
+}
+
+#[test]
+fn command_name_is_rendered_and_read_back_by_real_shells() {
+    let mut config = AppConfig::default();
+    config.command_name = "kclaude-test".to_string();
+    let text = render(&config, KEY);
+    assert!(text.contains("KIRO_GATEWAY_COMMAND=kclaude-test\n"));
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("kclaude.env");
+    std::fs::write(&file, &text).unwrap();
+    for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {
+        if !std::path::Path::new(shell).exists() {
+            continue;
+        }
+        let out = Command::new(shell)
+            .arg("-c")
+            .arg(r#". "$1"; printf '%s' "$KIRO_GATEWAY_COMMAND""#)
+            .arg("sh")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "kclaude-test", "{shell}");
+    }
 }
 
 #[test]
@@ -52,7 +77,7 @@ fn source_with(shell: &str, text: &str) -> Option<Vec<String>> {
     let dir = tempdir().unwrap();
     let file = dir.path().join("kclaude.env");
     std::fs::write(&file, text).unwrap();
-    let script = r#". "$1"; printf '%s\n' "$KIRO_GATEWAY_PORT" "$KIRO_GATEWAY_KEY" "$KCLAUDE_OPUS_MODEL" "$KCLAUDE_SONNET_MODEL" "$KCLAUDE_HAIKU_MODEL" "$KIRO_GATEWAY_UPGRADE_REQUIRED""#;
+    let script = r#". "$1"; printf '%s\n' "$KIRO_GATEWAY_PORT" "$KIRO_GATEWAY_KEY" "$KCLAUDE_OPUS_MODEL" "$KCLAUDE_SONNET_MODEL" "$KCLAUDE_HAIKU_MODEL" "$KIRO_GATEWAY_UPGRADE_REQUIRED" "$KIRO_GATEWAY_COMMAND""#;
     let output = Command::new(shell).arg("-c").arg(script).arg("sh").arg(&file).output().ok()?;
     assert!(output.status.success(), "{shell}: {}", String::from_utf8_lossy(&output.stderr));
     Some(String::from_utf8_lossy(&output.stdout).lines().map(str::to_string).collect())
@@ -71,6 +96,7 @@ fn real_shells_read_back_exactly_the_configured_values() {
         "claude-sonnet-5-5[1m]".to_string(),
         "us.anthropic.claude-haiku-4-5:0".to_string(),
         "0".to_string(),
+        "cclaude".to_string(),
     ];
     let mut tried = 0;
     for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {

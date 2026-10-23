@@ -87,8 +87,40 @@ describe('mock backend: gateway', () => {
   it('changing the port while running asks for a restart', async () => {
     await b.invoke('gateway_start')
     await vi.advanceTimersByTimeAsync(1000)
-    const r = (await b.invoke('config_update', { patch: { port: 8100 } })) as { restartRequired: boolean }
+    const r = (await b.invoke('config_update', { patch: { port: 6869 } })) as { restartRequired: boolean }
     expect(r.restartRequired).toBe(true)
+  })
+
+  it('defaults: port 6868 and command name cclaude, in config and in status', async () => {
+    expect(await b.invoke('config_get')).toMatchObject({ port: 6868, commandName: 'cclaude' })
+    expect(await b.invoke('gateway_status')).toMatchObject({ port: 6868 })
+    expect(await b.invoke('kclaude_status')).toMatchObject({ commandName: 'cclaude' })
+  })
+
+  it('renaming the command updates config and kclaude status together', async () => {
+    const r = (await b.invoke('config_update', { patch: { commandName: 'kclaude-test' } })) as {
+      config: { commandName: string }
+      restartRequired: boolean
+    }
+    expect(r.config.commandName).toBe('kclaude-test')
+    expect(r.restartRequired).toBe(false)
+    expect(await b.invoke('kclaude_status')).toMatchObject({ commandName: 'kclaude-test' })
+    expect(await b.invoke('config_get')).toMatchObject({ commandName: 'kclaude-test' })
+  })
+
+  it.each(['claude', 'ls', '9abc', 'has space', 'a', ''])('rejects the command name %j and keeps the old one', async (name) => {
+    expect((await rejection(b.invoke('config_update', { patch: { commandName: name } }))).code).toBe('invalid_argument')
+    expect(await b.invoke('config_get')).toMatchObject({ commandName: 'cclaude' })
+  })
+
+  it('a name already taken on this machine is refused with the contract sentence', async () => {
+    const e = await rejection(b.invoke('config_update', { patch: { commandName: 'rg' } }))
+    expect(e).toMatchObject({ code: 'invalid_argument', message: '这个名字已经被占用' })
+  })
+
+  it('a rejected patch changes nothing else in the same patch', async () => {
+    await rejection(b.invoke('config_update', { patch: { commandName: 'claude', port: 7000 } }))
+    expect(await b.invoke('config_get')).toMatchObject({ port: 6868, commandName: 'cclaude' })
   })
 
   it('config_update validates the port', async () => {

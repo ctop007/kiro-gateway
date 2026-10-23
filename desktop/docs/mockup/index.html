@@ -195,7 +195,8 @@ tr.detail strong { color: var(--ink); font-weight: 500; }
 .setting .desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .field-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: center; margin-bottom: 6px; font-size: 13px; }
 .field-row span { color: var(--muted); }
-input[type="number"] { width: 96px; border: 1px solid var(--line-strong); background: var(--panel); border-radius: 7px; padding: 3px 8px; }
+input[type="number"], input[type="text"] { width: 96px; border: 1px solid var(--line-strong); background: var(--panel); border-radius: 7px; padding: 3px 8px; }
+input#cmdName { width: 168px; }
 .mini-switch { width: 34px; height: 20px; border-radius: 10px; border: 0; background: var(--line-strong); position: relative; padding: 0; flex: none; }
 .mini-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .2s; }
 .mini-switch[aria-checked="true"] { background: var(--on); }
@@ -246,9 +247,9 @@ input[type="number"] { width: 96px; border: 1px solid var(--line-strong); backgr
       <label><input type="radio" name="st" value="expired"> 登录已失效</label>
     </fieldset>
     <fieldset>
-      <legend>kclaude</legend>
+      <legend>命令</legend>
       <label><input type="radio" name="kc" value="ok" checked> 已安装</label>
-      <label><input type="radio" name="kc" value="foreign"> 检测到已有 kclaude</label>
+      <label><input type="radio" name="kc" value="foreign"> 检测到已有 cclaude</label>
       <label><input type="radio" name="kc" value="noclaude"> 没装 Claude Code</label>
     </fieldset>
     <fieldset>
@@ -304,9 +305,9 @@ input[type="number"] { width: 96px; border: 1px solid var(--line-strong); backgr
             </div>
 
             <div class="panel">
-              <h2>kclaude 命令</h2>
+              <h2>cclaude 命令</h2>
               <p class="kc-state" id="kcState"></p>
-              <div class="cmd"><code>kclaude</code><span class="hint" id="kcHint">用法和 claude 一样</span></div>
+              <div class="cmd"><code>cclaude</code><span class="hint" id="kcHint">用法和 claude 一样</span></div>
               <dl class="mapping">
                 <dt>opus</dt><dd>claude-opus-5.5 [1m]</dd>
                 <dt>sonnet</dt><dd>claude-sonnet-5.5 [1m]</dd>
@@ -368,8 +369,8 @@ input[type="number"] { width: 96px; border: 1px solid var(--line-strong); backgr
       <section class="view" id="view-settings">
         <div class="settings">
           <div class="setting">
-            <div><div class="name">端口</div><div class="desc">改完后重启网关生效，kclaude 会自动跟上</div></div>
-            <div class="inline"><input type="number" value="8000" aria-label="端口"><span class="desc">只监听本机 127.0.0.1</span></div>
+            <div><div class="name">端口</div><div class="desc">改完后重启网关生效，cclaude 会自动跟上</div></div>
+            <div class="inline"><input type="number" value="6868" aria-label="端口"><span class="desc">只监听本机 127.0.0.1</span></div>
           </div>
           <div class="setting">
             <div><div class="name">模型对应</div><div class="desc">Claude Code 的三档模型分别用 Kiro 的哪个</div></div>
@@ -380,12 +381,19 @@ input[type="number"] { width: 96px; border: 1px solid var(--line-strong); backgr
             </div>
           </div>
           <div class="setting">
+            <div><label class="name" for="cmdName">命令名</label><div class="desc">终端里敲的命令名，改完新开一个终端就能用</div></div>
+            <div>
+              <div class="inline"><input type="text" id="cmdName" value="cclaude" spellcheck="false" autocapitalize="off" autocorrect="off"><button class="btn" disabled>保存</button></div>
+              <div class="desc">保存后提示「已改为 kclaude-test，新开一个终端即可使用」；名字不合法或已被占用时在这里说明原因</div>
+            </div>
+          </div>
+          <div class="setting">
             <div><div class="name">开机自启</div><div class="desc">登录后在托盘里启动；如果上次退出时网关是开着的，会自动打开</div></div>
             <div class="inline"><button class="mini-switch" role="switch" aria-checked="false" aria-label="开机自启"></button></div>
           </div>
           <div class="setting">
-            <div><div class="name">kclaude</div><div class="desc">写在 ~/.zshrc 里带标记的一段</div></div>
-            <div class="inline"><button class="btn">移除 kclaude</button></div>
+            <div><div class="name">cclaude</div><div class="desc">写在 ~/.zshrc 里带标记的一段</div></div>
+            <div class="inline"><button class="btn">移除 cclaude</button></div>
           </div>
           <div class="setting">
             <div><div class="name">版本</div><div class="desc">新版本会在后台下载，下次启动时生效</div></div>
@@ -396,7 +404,7 @@ input[type="number"] { width: 96px; border: 1px solid var(--line-strong); backgr
     </main>
 
     <footer class="statusbar">
-      <span id="sbState"><span class="pulse on"></span>127.0.0.1:8000</span>
+      <span id="sbState"><span class="pulse on"></span>127.0.0.1:6868</span>
       <span class="grow"></span>
       <span id="sbUpdate">v0.0.1</span>
     </footer>
@@ -417,12 +425,12 @@ const NO = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-wi
 const SKIP = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h6"/></svg>';
 
 const STATES = {
-  running:  { on: true,  title: '运行中', sub: '<code>127.0.0.1:8000</code>，已运行 2 小时 14 分', pulse: 'on' },
-  stopped:  { on: false, title: '已停止', sub: '打开开关后，就能在终端用 kclaude', pulse: '' },
+  running:  { on: true,  title: '运行中', sub: '<code>127.0.0.1:6868</code>，已运行 2 小时 14 分', pulse: 'on' },
+  stopped:  { on: false, title: '已停止', sub: '打开开关后，就能在终端用 cclaude', pulse: '' },
   starting: { on: true,  busy: true, title: '启动中', sub: '正在等待网关就绪', pulse: '' },
   nologin:  { on: false, disabled: true, title: '已停止', sub: '先登录 kiro-cli 才能打开', pulse: '' },
   nocli:    { on: false, disabled: true, title: '已停止', sub: '先安装 kiro-cli 才能打开', pulse: '' },
-  port:     { on: false, title: '没能启动', sub: '8000 端口被别的程序占用', pulse: 'bad',
+  port:     { on: false, title: '没能启动', sub: '6868 端口被别的程序占用', pulse: 'bad',
               notice: ['warn', '占用端口的是 <strong>python3.13</strong>（pid 89984），可能是你手动起的网关。可以先关掉它，或者换一个端口。', null, ['换个端口', '重试']] },
   crashed:  { on: false, title: '意外退出', sub: '网关进程在 14:32 退出了', pulse: 'bad',
               notice: ['bad', '网关进程意外退出。最后几行日志：', 'ERROR | kiro.auth:refresh - Token refresh failed: Connection reset\nERROR | main:lifespan - Startup aborted', ['重新启动', '打开完整日志']] },
@@ -447,7 +455,7 @@ function checks(st, kc) {
       : ['bad', '登录已失效', '重新登录一次就好', ['<code>~/.local/bin/kiro-cli login</code>', '<button class="btn">复制</button>']],
     claudeOk
       ? ['ok', 'Claude Code 已安装', '~/.local/bin/claude']
-      : ['bad', '没找到 Claude Code', '网关照样能开，但 kclaude 要等装好 Claude Code 才能用', ['<button class="btn">查看安装方法</button>']],
+      : ['bad', '没找到 Claude Code', '网关照样能开，但 cclaude 要等装好 Claude Code 才能用', ['<button class="btn">查看安装方法</button>']],
   ];
 }
 
@@ -470,7 +478,7 @@ function renderLogs(kind) {
     document.getElementById('lgTodaySub').textContent = '今日，0 次请求';
     document.getElementById('lgMonthSub').textContent = '10 月，0 次请求';
     document.getElementById('bars').innerHTML = '<li style="grid-template-columns:1fr;color:var(--faint)">本月还没有用量</li>';
-    body.innerHTML = '<div class="empty">还没有请求。在终端运行 <code>kclaude</code> 试试，请求结束后会出现在这里。</div>';
+    body.innerHTML = '<div class="empty">还没有请求。在终端运行 <code>cclaude</code> 试试，请求结束后会出现在这里。</div>';
     return;
   }
   document.getElementById('lgToday').innerHTML = '1.84<small>credits</small>';
@@ -536,7 +544,7 @@ function render() {
   const kcHint = document.getElementById('kcHint');
   if (kc === 'foreign') {
     kcState.className = 'kc-state warn';
-    kcState.innerHTML = '~/.zshrc 里已经有一个你自己加的 kclaude，App 没有改动它。<br><button class="btn" style="margin-top:6px">改由 App 管理</button>';
+    kcState.innerHTML = '~/.zshrc 里已经有一个你自己加的 cclaude，App 没有改动它。<br><button class="btn" style="margin-top:6px">改由 App 管理</button>';
     kcHint.textContent = '当前用的是你自己的版本';
   } else if (kc === 'noclaude') {
     kcState.className = 'kc-state warn';
@@ -549,7 +557,7 @@ function render() {
   }
 
   const pulse = s.pulse ? `<span class="pulse ${s.pulse}"></span>` : '<span class="pulse"></span>';
-  document.getElementById('sbState').innerHTML = pulse + (s.on && !s.busy ? '127.0.0.1:8000' : s.title);
+  document.getElementById('sbState').innerHTML = pulse + (s.on && !s.busy ? '127.0.0.1:6868' : s.title);
 
   const sbUp = document.getElementById('sbUpdate');
   const ver = document.getElementById('verText');

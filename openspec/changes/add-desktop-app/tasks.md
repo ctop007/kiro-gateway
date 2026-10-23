@@ -72,8 +72,8 @@
 
 ## 10. 端口与命令名可设置
 
-- [ ] 10.1 Rust：`AppConfig.commandName`（默认 `cclaude`）、默认端口 6868；`config_update` 校验名字（格式、保留名、PATH 与启动文件里同名占用）并在通过后按新名字重写脚本与标记段；旧版 `kclaude` 标记段识别为自己的旧段并就地替换；`foreign` 检测按当前名字；验证：`cargo test app_config::` 与 `cargo test kclaude::` 新增改名、非法名、占用、旧标记迁移、foreign 按新名测试，临时 HOME 下真 zsh/bash 里新名可用、旧名消失
-- [ ] 10.2 前端：设置页「命令名」输入框（即时校验提示、保存后显示新名字）、端口默认 6868；主页 kclaude 区和所有文案用当前命令名；验证：`pnpm test` 覆盖名字校验映射与文案替换
+- [x] 10.1 Rust：`AppConfig.commandName`（默认 `cclaude`）、默认端口 6868；`config_update` 校验名字（格式、保留名、PATH 与启动文件里同名占用）并在通过后按新名字重写脚本与标记段；旧版 `kclaude` 标记段识别为自己的旧段并就地替换；`foreign` 检测按当前名字；验证：`cargo test app_config::` 与 `cargo test kclaude::` 新增改名、非法名、占用、旧标记迁移、foreign 按新名测试，临时 HOME 下真 zsh/bash 里新名可用、旧名消失
+- [x] 10.2 前端：设置页「命令名」输入框（即时校验提示、保存后显示新名字）、端口默认 6868；主页 kclaude 区和所有文案用当前命令名；验证：`pnpm test` 覆盖名字校验映射与文案替换
 
 ## 9. 集成验收
 

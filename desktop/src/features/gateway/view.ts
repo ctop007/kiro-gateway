@@ -2,6 +2,7 @@
 import type { GatewayStatus, IpcError } from '@/lib/ipc-types'
 import { formatClockShort, formatUptime } from '@/features/shared/format'
 import { isAbsoluteCommand, type SwitchGate } from '@/features/env/view'
+import { DEFAULT_COMMAND_NAME, stoppedHint } from '@/features/command-name/view'
 
 export type Pulse = '' | 'on' | 'bad'
 export type NoticeTone = 'bad' | 'warn'
@@ -49,6 +50,8 @@ export interface GatewayViewInput {
   loginCommand: string | null
   now: Date
   timeZone?: string
+  /** Current command name for the stopped-state hint; defaults to `cclaude`. */
+  commandName?: string
 }
 
 const UPGRADE_REASON = '需要先升级到新版本才能使用'
@@ -127,7 +130,7 @@ function buildNotice(status: GatewayStatus, blocked: boolean, loginCommand: stri
  * gateway is running or starting, so a blocked environment cannot trap it on.
  */
 export function gatewayView(input: GatewayViewInput): GatewayView {
-  const { status, gate, upgradeRequired, loginCommand, now, timeZone } = input
+  const { status, gate, upgradeRequired, loginCommand, now, timeZone, commandName = DEFAULT_COMMAND_NAME } = input
   if (!status) {
     return {
       title: '正在读取状态',
@@ -201,7 +204,7 @@ export function gatewayView(input: GatewayViewInput): GatewayView {
     default:
       return {
         title: '已停止',
-        sub: { code: null, text: blocked ? blockReason : '打开开关后，就能在终端用 kclaude' },
+        sub: { code: null, text: blocked ? blockReason : stoppedHint(commandName) },
         switchOn: false,
         busy: false,
         disabled: blocked,

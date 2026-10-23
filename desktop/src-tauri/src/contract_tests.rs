@@ -151,9 +151,25 @@ fn config_types_match() {
     matches_interface(&ts, "ConfigUpdateResult", &result);
     // The patch the frontend sends deserialises, and stray keys do not.
     let patch: crate::app_config::ConfigPatch =
-        serde_json::from_str(r#"{"port":8100,"models":{"opus":"x"},"autostart":true}"#).unwrap();
+        serde_json::from_str(r#"{"port":8100,"commandName":"kclaude-test","models":{"opus":"x"},"autostart":true}"#)
+            .unwrap();
     assert_eq!(patch.port, Some(8100));
-    assert_eq!(interface_keys(&ts, "ConfigPatch"), ["autostart", "models", "port"].map(String::from).into_iter().collect());
+    assert_eq!(patch.command_name.as_deref(), Some("kclaude-test"));
+    // Every key of the TS patch is a key the Rust patch understands, and vice versa.
+    assert_eq!(
+        interface_keys(&ts, "ConfigPatch"),
+        ["autostart", "commandName", "models", "port"].map(String::from).into_iter().collect()
+    );
+    let full = to_json(&crate::app_config::ConfigPatch {
+        port: Some(1),
+        models: Some(Default::default()),
+        autostart: Some(true),
+        command_name: Some("cclaude".into()),
+    });
+    assert_eq!(json_keys(&full), interface_keys(&ts, "ConfigPatch"), "ConfigPatch: Rust keys differ from ipc-types.ts");
+    // The documented defaults.
+    assert_eq!(config["port"], 6868);
+    assert_eq!(config["commandName"], "cclaude");
 }
 
 #[test]
@@ -161,14 +177,14 @@ fn gateway_types_match() {
     let ts = ts_source();
     let failure = GatewayFailure {
         kind: FailureKind::PortInUse,
-        message: "8000 端口被别的程序占用".into(),
+        message: "6868 端口被别的程序占用".into(),
         occupant: Some(PortOccupant { name: Some("python3.13".into()), pid: Some(4242) }),
         log_excerpt: vec!["line".into()],
         at: at().to_rfc3339(),
     };
     let status = GatewayStatus {
         state: GatewayState::StartFailed,
-        port: 8000,
+        port: 6868,
         pid: Some(1),
         since: Some(at().to_rfc3339()),
         failure: Some(failure),
@@ -178,7 +194,7 @@ fn gateway_types_match() {
     matches_interface(&ts, "GatewayFailure", &value["failure"]);
     matches_interface(&ts, "PortOccupant", &value["failure"]["occupant"]);
     // Optional fields are `null`, never omitted.
-    let stopped = to_json(&GatewayStatus::stopped(8000));
+    let stopped = to_json(&GatewayStatus::stopped(6868));
     matches_interface(&ts, "GatewayStatus", &stopped);
     assert!(stopped["failure"].is_null() && stopped["pid"].is_null() && stopped["since"].is_null());
     matches_interface(&ts, "GatewayModel", &to_json(&GatewayModel { id: "x".into() }));
@@ -248,21 +264,23 @@ fn env_report_matches() {
 fn kclaude_status_matches() {
     let ts = ts_source();
     let status = KclaudeStatus {
+        command_name: "cclaude".into(),
         state: KclaudeState::Foreign,
         shell: ShellKind::Zsh,
         rc_files: vec!["~/.zshrc".into()],
         claude_installed: true,
         verify: KclaudeVerify {
             status: VerifyStatus::Fail,
-            detail: "新开的终端里找不到 kclaude".into(),
+            detail: "新开的终端里找不到 cclaude".into(),
             fix: Some(KclaudeFix::CopyCommand { label: "复制".into(), command: "cmd".into() }),
         },
     };
     let value = to_json(&status);
     matches_interface(&ts, "KclaudeStatus", &value);
+    assert_eq!(value["commandName"], "cclaude");
     matches_interface(&ts, "KclaudeVerify", &value["verify"]);
     same_fields("FixAction(copy_command)", &value["verify"]["fix"], variant_keys(&ts, "FixAction", "kind", "copy_command"));
-    let skipped = to_json(&KclaudeVerify::skipped());
+    let skipped = to_json(&KclaudeVerify::skipped("cclaude"));
     matches_interface(&ts, "KclaudeVerify", &skipped);
     assert!(skipped["fix"].is_null());
 }

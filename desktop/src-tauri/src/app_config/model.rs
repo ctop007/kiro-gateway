@@ -1,5 +1,6 @@
 //! `AppConfig` and friends: the JSON shapes of `docs/ipc-contract.md` section 1.
 
+use super::command_name::{self, NameProblem, DEFAULT_COMMAND_NAME};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
@@ -9,7 +10,7 @@ pub const MIN_PORT: i64 = 1024;
 /// Highest TCP port.
 pub const MAX_PORT: i64 = 65535;
 /// Default gateway port.
-pub const DEFAULT_PORT: u16 = 8000;
+pub const DEFAULT_PORT: u16 = 6868;
 /// Longest model name accepted.
 const MAX_MODEL_LEN: usize = 128;
 
@@ -59,8 +60,10 @@ impl Models {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
-    /// 1024..=65535, default 8000.
+    /// 1024..=65535, default 6868. A port already saved in `config.json` is kept as it is.
     pub port: u16,
+    /// Name of the kclaude shell command, default `cclaude`; see [`super::command_name`].
+    pub command_name: String,
     pub models: Models,
     /// Start the App at login; mirrors the system state.
     pub autostart: bool,
@@ -74,6 +77,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             port: DEFAULT_PORT,
+            command_name: DEFAULT_COMMAND_NAME.to_string(),
             models: Models::default(),
             autostart: false,
             gateway_wanted: false,
@@ -86,6 +90,7 @@ impl AppConfig {
     /// Check a whole config, used on files that may have been edited by hand.
     pub fn validate(&self) -> Result<(), ConfigError> {
         validate_port(i64::from(self.port))?;
+        validate_command_name(&self.command_name)?;
         for tier in [ModelTier::Opus, ModelTier::Sonnet, ModelTier::Haiku] {
             validate_model(self.models.get(tier))?;
         }
@@ -112,6 +117,8 @@ pub struct ConfigPatch {
     pub port: Option<i64>,
     pub models: Option<PartialModels>,
     pub autostart: Option<bool>,
+    #[serde(rename = "commandName")]
+    pub command_name: Option<String>,
 }
 
 /// Failure of a config operation; maps onto the error `code`s of the IPC contract.
@@ -186,6 +193,25 @@ pub fn validate_port(port: i64) -> Result<u16, ConfigError> {
     }
 }
 
+/// Check a command name from the frontend (format and reserved names only).
+///
+/// Whether the name is already used by another command on this machine is checked by the
+/// kclaude service, which knows the PATH and the startup files.
+///
+/// Returns:
+///     The name, or `invalid_argument` with the reason in Chinese.
+pub fn validate_command_name(name: &str) -> Result<String, ConfigError> {
+    match command_name::validate(name) {
+        Ok(()) => Ok(name.to_string()),
+        Err(problem) => Err(command_name_error(problem)),
+    }
+}
+
+/// The `invalid_argument` error for a command-name problem.
+pub fn command_name_error(problem: NameProblem) -> ConfigError {
+    ConfigError::InvalidArgument(problem.message().to_string())
+}
+
 /// Check a model name and return it trimmed.
 ///
 /// The name is written unquoted into `kclaude.env`, so only characters that no shell
@@ -222,6 +248,9 @@ pub fn apply_patch(base: &AppConfig, patch: &ConfigPatch) -> Result<AppConfig, C
         if let Some(name) = &models.haiku {
             next.models.haiku = validate_model(name)?;
         }
+    }
+    if let Some(name) = &patch.command_name {
+        next.command_name = validate_command_name(name)?;
     }
     if let Some(autostart) = patch.autostart {
         next.autostart = autostart;

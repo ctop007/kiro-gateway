@@ -19,7 +19,7 @@ function view(over: Partial<GatewayViewInput> = {}) {
 }
 
 describe('gatewayView: the five states', () => {
-  it('stopped: switch off and enabled, hint about kclaude', () => {
+  it('stopped: switch off and enabled, hint about the command', () => {
     const v = view()
     expect(v).toMatchObject({
       title: '已停止',
@@ -30,8 +30,14 @@ describe('gatewayView: the five states', () => {
       pulse: '',
       notice: null
     })
-    expect(v.sub).toEqual({ code: null, text: '打开开关后，就能在终端用 kclaude' })
+    expect(v.sub).toEqual({ code: null, text: '打开开关后，就能在终端用 cclaude' })
     expect(v.statusBar).toEqual({ text: '已停止', pulse: '' })
+  })
+
+  it('stopped: the hint uses the current command name', () => {
+    const v = view({ commandName: 'kclaude-test' })
+    expect(v.sub).toEqual({ code: null, text: '打开开关后，就能在终端用 kclaude-test' })
+    expect(JSON.stringify(v)).not.toContain('cclaude')
   })
 
   it('starting: switch on and busy, still clickable so the user can cancel', () => {
@@ -50,7 +56,7 @@ describe('gatewayView: the five states', () => {
 
   it('running without a usable since drops the uptime', () => {
     const v = view({ status: gw({ state: 'running', since: null }) })
-    expect(v.sub).toEqual({ code: '127.0.0.1:8000', text: '' })
+    expect(v.sub).toEqual({ code: '127.0.0.1:6868', text: '' })
   })
 
   it('start_failed (other): failure message, log excerpt, retry and open-log actions', () => {
@@ -109,14 +115,14 @@ describe('gatewayView: port in use', () => {
   const portFail = (occupant: { name: string | null; pid: number | null } | null) =>
     gw({
       state: 'start_failed',
-      port: 8000,
-      failure: failure({ kind: 'port_in_use', message: '8000 端口被别的程序占用', occupant })
+      port: 6868,
+      failure: failure({ kind: 'port_in_use', message: '6868 端口被别的程序占用', occupant })
     })
 
   it('names the occupying process and offers change-port and retry', () => {
     const v = view({ status: portFail({ name: 'python3.13', pid: 89984 }) })
     expect(v.title).toBe('没能启动')
-    expect(v.sub.text).toBe('8000 端口被别的程序占用')
+    expect(v.sub.text).toBe('6868 端口被别的程序占用')
     expect(v.notice!.tone).toBe('warn')
     expect(v.notice!.segments).toEqual([
       { text: '占用端口的是 ' },

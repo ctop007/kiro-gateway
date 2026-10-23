@@ -14,7 +14,8 @@ export function SwitchPanel({ app, onChangePort }: Props) {
     gate: switchGate(app.env),
     upgradeRequired: app.config?.upgradeRequired ?? false,
     loginCommand: loginCommandFor(app.env),
-    now: app.now
+    now: app.now,
+    commandName: app.commandName
   })
   const busy = app.toggle.pending
 

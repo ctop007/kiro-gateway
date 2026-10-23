@@ -31,6 +31,7 @@ import { writeClipboardText } from '@/lib/tauri-clipboard'
 import { appendedAction, indexSnapshot, mergeAppended } from '@/features/request-log/view'
 import { retryCommandFor } from '@/features/update/view'
 import { startErrorView } from '@/features/gateway/view'
+import { commandNameOutcome, resolveCommandName, type CommandNameOutcome } from '@/features/command-name/view'
 import { useAsyncAction } from './useAsyncAction'
 import { createRaceGuard } from './race-guard'
 
@@ -88,6 +89,8 @@ export function useAppState() {
   const kclaudeAction = useAsyncAction()
   const logAction = useAsyncAction()
   const configAction = useAsyncAction()
+  const commandNameAction = useAsyncAction()
+  const [commandNameResult, setCommandNameResult] = useState<CommandNameOutcome | null>(null)
   const updateAction = useAsyncAction()
 
   // ----- initial loads -----
@@ -217,6 +220,24 @@ export function useAppState() {
     [configAction, configGuard, refreshGatewayStatus]
   )
 
+  /** Rename the shell command. Rust validates, rewrites the marked block and returns the final config. */
+  const saveCommandName = useCallback(
+    async (name: string) => {
+      setCommandNameResult(null)
+      const finish = configGuard.begin()
+      const r = await commandNameAction.run(() => configUpdate({ commandName: name }))
+      if (r.ok) {
+        finish(r.value.config)
+        // The rename rewrote the marked block: re-read state, rc files and verify result.
+        void kclaudeStatus().then(setKclaude, (e) => console.warn('kclaude_status failed', toIpcError(e)))
+      }
+      const outcome = commandNameOutcome(r.ok ? { ok: true, name: r.value.config.commandName } : r)
+      setCommandNameResult(outcome)
+      return r.ok
+    },
+    [commandNameAction, configGuard]
+  )
+
   const clearLog = useCallback(async () => {
     const r = await logAction.run(() => requestLogClear())
     if (r.ok) setLog(indexSnapshot(r.value))
@@ -238,6 +259,7 @@ export function useAppState() {
   }, [updateAction])
 
   const gatewayRunning = gateway?.state === 'running'
+  const commandName = resolveCommandName(config, kclaude)
 
   return {
     now,
@@ -249,6 +271,7 @@ export function useAppState() {
     log,
     models,
     gatewayRunning,
+    commandName,
     restartNote,
     copied,
     toggle,
@@ -257,6 +280,9 @@ export function useAppState() {
     kclaudeAction,
     logAction,
     configAction,
+    commandNameAction,
+    commandNameResult,
+    clearCommandNameResult: () => setCommandNameResult(null),
     updateAction,
     startGateway,
     stopGateway,
@@ -267,6 +293,7 @@ export function useAppState() {
     adoptKclaude: () => kclaudeDo(kclaudeAdopt),
     removeKclaude: () => kclaudeDo(kclaudeRemove),
     saveConfig,
+    saveCommandName,
     clearLog,
     checkUpdate,
     retryUpdate,

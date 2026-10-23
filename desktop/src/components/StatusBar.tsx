@@ -9,7 +9,8 @@ export function StatusBar({ app }: { app: AppState }) {
     gate: switchGate(app.env),
     upgradeRequired: app.config?.upgradeRequired ?? false,
     loginCommand: loginCommandFor(app.env),
-    now: app.now
+    now: app.now,
+    commandName: app.commandName
   })
   const u = statusBarUpdate(app.update, __APP_VERSION__)
   const forced = isUpgradeForced(app.update, app.config?.upgradeRequired ?? false)

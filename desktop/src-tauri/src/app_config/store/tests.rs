@@ -38,7 +38,7 @@ fn first_open_creates_defaults_secret_and_env_file() {
     let secret = fs::read_to_string(paths.secret_file()).unwrap();
     assert_eq!(secret.len(), 64);
     assert!(env_lines(&paths).contains(&format!("KIRO_GATEWAY_KEY={secret}")));
-    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_PORT=8000".to_string()));
+    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_PORT=6868".to_string()));
 }
 
 #[test]
@@ -46,7 +46,8 @@ fn config_json_on_disk_uses_the_contract_shape() {
     let (_d, paths) = setup();
     ConfigStore::open(paths.clone(), now()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
-    assert_eq!(value["port"], 8000);
+    assert_eq!(value["port"], 6868);
+    assert_eq!(value["commandName"], "cclaude");
     assert_eq!(value["models"]["opus"], "claude-opus-5-5[1m]");
     assert_eq!(value["gatewayWanted"], false);
     assert_eq!(value["upgradeRequired"], false);
@@ -89,7 +90,7 @@ fn a_missing_or_stale_env_file_is_rewritten_on_open() {
 
     fs::write(paths.kclaude_env_file(), "KIRO_GATEWAY_PORT=1\n").unwrap();
     ConfigStore::open(paths.clone(), now()).unwrap();
-    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_PORT=8000".to_string()));
+    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_PORT=6868".to_string()));
 }
 
 #[test]
@@ -182,6 +183,7 @@ fn update_changes_only_patched_fields_and_persists_them() {
                 port: Some(8150),
                 models: Some(PartialModels { opus: Some("claude-opus-4.5".into()), ..Default::default() }),
                 autostart: Some(true),
+                command_name: None,
             },
             false,
         )
@@ -205,6 +207,7 @@ fn update_rewrites_kclaude_env_with_the_new_values() {
                 port: Some(8100),
                 models: Some(PartialModels { haiku: Some("claude-haiku-4.5".into()), ..Default::default() }),
                 autostart: None,
+                command_name: None,
             },
             false,
         )
@@ -344,7 +347,7 @@ fn write_failure_is_reported_and_memory_keeps_the_old_config() {
     fs::write(paths.config_file().join("x"), "x").unwrap();
     let err = store.update(&ConfigPatch { port: Some(8200), ..Default::default() }, false).unwrap_err();
     assert_eq!(err.code(), "write_failed");
-    assert_eq!(store.get().port, 8000);
+    assert_eq!(store.get().port, 6868);
     assert!(!err.message().contains('/'));
 }
 
@@ -392,4 +395,65 @@ fn check_patch_validates_without_changing_anything() {
     assert_eq!(store.check_patch(&ConfigPatch { port: Some(80), ..Default::default() }).unwrap_err().code(), "invalid_argument");
     assert_eq!(store.get(), AppConfig::default());
     assert_eq!(fs::read(paths.config_file()).unwrap(), before);
+}
+
+// ---- commandName (task 10.1) ---------------------------------------------------------------
+
+#[test]
+fn old_config_json_without_command_name_is_not_corrupt_and_keeps_the_users_port() {
+    let (_d, paths) = setup();
+    fs::create_dir_all(paths.root()).unwrap();
+    let old = r#"{"port":8000,"models":{"opus":"claude-opus-5-5[1m]","sonnet":"claude-sonnet-5-5[1m]","haiku":"claude-haiku-4-5"},"autostart":false,"gatewayWanted":true,"upgradeRequired":false}"#;
+    fs::write(paths.config_file(), old).unwrap();
+    let (store, notes) = ConfigStore::open(paths.clone(), now()).unwrap();
+    assert!(!notes.contains(&OpenNote::ConfigCorrupt { backup_kept: true }), "{notes:?}");
+    assert!(!notes.contains(&OpenNote::ConfigCorrupt { backup_kept: false }), "{notes:?}");
+    assert_eq!(store.get().port, 8000, "the user's own port must survive the default change");
+    assert_eq!(store.get().command_name, "cclaude");
+    assert!(store.get().gateway_wanted);
+    assert!(names(&paths).iter().all(|n| !n.starts_with("config.json.bak-")), "{:?}", names(&paths));
+    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_PORT=8000".to_string()));
+    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_COMMAND=cclaude".to_string()));
+}
+
+#[test]
+fn update_command_name_persists_and_reaches_the_env_file() {
+    let (_d, paths) = setup();
+    let (store, _) = ConfigStore::open(paths.clone(), now()).unwrap();
+    let outcome = store
+        .update(&ConfigPatch { command_name: Some("kclaude-test".into()), ..Default::default() }, true)
+        .unwrap();
+    assert_eq!(outcome.config.command_name, "kclaude-test");
+    assert!(!outcome.restart_required, "renaming the command never needs a gateway restart");
+    let on_disk: AppConfig = serde_json::from_str(&fs::read_to_string(paths.config_file()).unwrap()).unwrap();
+    assert_eq!(on_disk.command_name, "kclaude-test");
+    assert!(env_lines(&paths).contains(&"KIRO_GATEWAY_COMMAND=kclaude-test".to_string()));
+    drop(store);
+    let (again, _) = ConfigStore::open(paths, now()).unwrap();
+    assert_eq!(again.get().command_name, "kclaude-test");
+}
+
+#[test]
+fn invalid_command_name_changes_nothing_on_disk() {
+    let (_d, paths) = setup();
+    let (store, _) = ConfigStore::open(paths.clone(), now()).unwrap();
+    let before = (fs::read(paths.config_file()).unwrap(), fs::read(paths.kclaude_env_file()).unwrap());
+    for bad in ["claude", "ls", "9abc", "a b", ""] {
+        let err = store
+            .update(&ConfigPatch { command_name: Some(bad.into()), ..Default::default() }, false)
+            .unwrap_err();
+        assert_eq!(err.code(), "invalid_argument", "{bad:?}");
+    }
+    assert_eq!(store.get().command_name, "cclaude");
+    assert_eq!(before, (fs::read(paths.config_file()).unwrap(), fs::read(paths.kclaude_env_file()).unwrap()));
+}
+
+#[test]
+fn config_json_with_a_reserved_command_name_is_treated_as_corrupt() {
+    let (_d, paths) = setup();
+    fs::create_dir_all(paths.root()).unwrap();
+    fs::write(paths.config_file(), r#"{"commandName":"claude"}"#).unwrap();
+    let (store, notes) = ConfigStore::open(paths.clone(), now()).unwrap();
+    assert!(notes.contains(&OpenNote::ConfigCorrupt { backup_kept: true }), "{notes:?}");
+    assert_eq!(store.get().command_name, "cclaude");
 }

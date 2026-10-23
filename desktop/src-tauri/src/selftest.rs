@@ -1,14 +1,15 @@
 //! Headless acceptance run (debug builds only): `kiro-gateway-desktop --selftest`.
 //!
 //! Drives the same functions the commands call, with no window: the environment check, the
-//! kclaude install into a startup file, the real PyInstaller sidecar, the `kclaude` command
-//! in a real zsh, stopping, and removal. Everything happens below a throw-away HOME and data
+//! kclaude install into a startup file, the real PyInstaller sidecar, the `cclaude` command
+//! (the default command name) in a real zsh, renaming it, stopping, and removal. Everything happens below a throw-away HOME and data
 //! directory; the user's real startup files are only `stat`ed before and after to prove they
 //! were not touched.
 //!
 //! Environment (all optional):
 //!
-//! - `KGW_SELFTEST_PORT`: port to use (default: first free one in 8100..=8199).
+//! - `KGW_SELFTEST_PORT`: port to use (default: first free one in 8100..=8199; the App's own
+//!   default, 6868, is never used so a gateway the user runs there is left alone).
 //! - `KGW_SELFTEST_DB`: kiro-cli database to hand to the sidecar. Default: a fake one with a
 //!   far-future expiry, so no token refresh can happen and the user's real login (whose refresh
 //!   token a refresh would rotate) is never involved.
@@ -24,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::app_config::command_name::DEFAULT_COMMAND_NAME;
 use crate::app_config::{AppPaths, ConfigStore};
 use crate::env_check::report::{gateway_gate, run_env_check, CheckStatus, GatewayGate};
 use crate::gateway::port::{PortOps, SystemPorts};
@@ -118,13 +120,18 @@ fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
-/// Run `kclaude <args>` in a login interactive zsh with `HOME` set to the throw-away one.
-fn run_kclaude(home: &Path, args: &str) -> Option<(Option<i32>, String, String)> {
-    let command = format!("kclaude {args}");
+/// Run `<command> <args>` in a login interactive zsh with `HOME` set to the throw-away one.
+fn run_command(home: &Path, name: &str, args: &str) -> Option<(Option<i32>, String, String)> {
+    let command = format!("{name} {args}");
     match run_shell_with_env(Path::new("/bin/zsh"), &["-lic", &command], home, Duration::from_secs(30), &[]) {
         RunOutcome::Finished { code, stdout, stderr } => Some((code, stdout, stderr)),
         _ => None,
     }
+}
+
+/// Run the default-named command (`cclaude`).
+fn run_kclaude(home: &Path, args: &str) -> Option<(Option<i32>, String, String)> {
+    run_command(home, DEFAULT_COMMAND_NAME, args)
 }
 
 fn pgrep_count(pattern: &str) -> usize {
@@ -238,10 +245,15 @@ pub fn run() -> i32 {
     drop(blocked_service);
 
     // ---- 3. install kclaude into the throw-away .zshrc -------------------------------
-    let env = crate::kclaude::commands::make_env(home.clone(), data.clone());
+    let env = crate::kclaude::commands::make_env(home.clone(), data.clone(), &config.get().command_name);
     let backend = SystemBackend::new(crate::kclaude::commands::search_dirs(&[bin.clone()], &home));
     let kclaude = KclaudeService::new(env, &backend);
     let status = kclaude.install();
+    c.check(
+        "the default command name is cclaude and the default port is 6868",
+        config.get().command_name == "cclaude" && crate::app_config::model::DEFAULT_PORT == 6868,
+        || format!("{:?}", config.get().command_name),
+    );
     c.check("kclaude install succeeds", matches!(&status, Ok(s) if s.state == KclaudeState::Installed), || format!("{status:?}"));
     if let Ok(s) = &status {
         c.check("kclaude check in a fresh login shell is ok", format!("{:?}", s.verify.status) == "Ok", || format!("{:?}", s.verify.detail));
@@ -250,7 +262,7 @@ pub fn run() -> i32 {
     let installed_rc = fs::read_to_string(&rc_path).unwrap_or_default();
     c.check(
         "the startup file keeps the user's lines and gains one marked block",
-        installed_rc.starts_with(original_rc) && installed_rc.matches("# >>> kiro-gateway-desktop kclaude >>>").count() == 1,
+        installed_rc.starts_with(original_rc) && installed_rc.matches("# >>> kiro-gateway-desktop command >>>").count() == 1,
         || "block missing, duplicated or user lines changed".into(),
     );
     c.check(
@@ -258,6 +270,16 @@ pub fn run() -> i32 {
         fs::read_dir(&home).map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with(".zshrc.bak-kiro-gateway-"))).unwrap_or(false),
         || "no .zshrc.bak-kiro-gateway-* file".into(),
     );
+
+    c.check(
+        "scripts are named after the command: cclaude.zsh exists, kclaude.zsh does not",
+        data.join("cclaude.zsh").is_file() && !data.join("kclaude.zsh").exists(),
+        || "unexpected script file names".into(),
+    );
+    match run_command(&home, "type", "cclaude") {
+        Some((_, out, _)) => c.check("a fresh login shell knows cclaude as a function", out.contains("function"), || out.clone()),
+        None => c.check("a fresh login shell ran `type cclaude`", false, || "shell failed".into()),
+    }
 
     // ---- 4. start the real sidecar, /health only ------------------------------------------
     let db = std::env::var_os("KGW_SELFTEST_DB").map(PathBuf::from).unwrap_or_else(|| {
@@ -348,7 +370,61 @@ pub fn run() -> i32 {
         None => c.check("kclaude ran in zsh (stopped)", false, || "shell failed".into()),
     }
 
+    // ---- 7b. rename the command: new name works, old name is gone, one block -------------------
+    let renamed = crate::kclaude::rename::apply_update(
+        &config,
+        &crate::kclaude::commands::make_env(home.clone(), data.clone(), &config.get().command_name),
+        &backend,
+        &crate::app_config::ConfigPatch { command_name: Some("kclaude-test".into()), ..Default::default() },
+        false,
+    );
+    c.check("renaming the command to kclaude-test succeeds", renamed.is_ok(), || format!("{renamed:?}"));
+    let after_rename = fs::read_to_string(&rc_path).unwrap_or_default();
+    c.check(
+        "after the rename the startup file has one block and points at kclaude-test.zsh",
+        after_rename.matches("# >>> kiro-gateway-desktop command >>>").count() == 1
+            && after_rename.contains("kclaude-test.zsh")
+            && !after_rename.contains("cclaude.zsh"),
+        || after_rename.clone(),
+    );
+    c.check(
+        "the old script is deleted and the new one exists",
+        !data.join("cclaude.zsh").exists() && data.join("kclaude-test.zsh").is_file(),
+        || "script files do not match the new name".into(),
+    );
+    match run_command(&home, "type", "kclaude-test") {
+        Some((_, out, _)) => c.check("the new name is a function in a fresh login shell", out.contains("function"), || out.clone()),
+        None => c.check("a fresh login shell ran `type kclaude-test`", false, || "shell failed".into()),
+    }
+    match run_command(&home, "type", "cclaude") {
+        Some((_, out, _)) => c.check("the old name no longer exists", !out.contains("cclaude is a"), || out.clone()),
+        None => c.check("a fresh login shell ran `type cclaude`", false, || "shell failed".into()),
+    }
+    match run_command(&home, "kclaude-test", "--version") {
+        Some((code, _out, err)) => {
+            c.check("renamed command: gateway stopped gives a non-zero exit", code.is_some_and(|c| c != 0), || format!("{code:?}"));
+            c.check("renamed command: the message starts with the new name", err.contains("kclaude-test: "), || err.clone());
+        }
+        None => c.check("the renamed command ran in zsh", false, || "shell failed".into()),
+    }
+    let refused = crate::kclaude::rename::apply_update(
+        &config,
+        &crate::kclaude::commands::make_env(home.clone(), data.clone(), &config.get().command_name),
+        &backend,
+        &crate::app_config::ConfigPatch { command_name: Some("claude".into()), ..Default::default() },
+        false,
+    );
+    c.check(
+        "renaming to claude is refused and the name stays",
+        refused.is_err() && config.get().command_name == "kclaude-test",
+        || format!("{refused:?}"),
+    );
+
     // ---- 8. remove kclaude: the startup file is back to the original bytes ---------------
+    let kclaude = KclaudeService::new(
+        crate::kclaude::commands::make_env(home.clone(), data.clone(), &config.get().command_name),
+        &backend,
+    );
     let removed = kclaude.remove();
     c.check("kclaude remove succeeds", matches!(&removed, Ok(s) if s.state == KclaudeState::NotInstalled), || format!("{removed:?}"));
     c.check(

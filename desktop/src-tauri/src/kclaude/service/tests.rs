@@ -14,6 +14,10 @@ struct FakeBackend {
     claude: bool,
     verify_result: RefCell<KclaudeVerify>,
     verify_calls: Cell<u32>,
+    /// Names the fake PATH knows an executable for.
+    path_names: RefCell<Vec<String>>,
+    /// Command names the verification was asked about, in order.
+    verified: RefCell<Vec<String>>,
 }
 
 impl FakeBackend {
@@ -27,6 +31,8 @@ impl FakeBackend {
                 fix: None,
             }),
             verify_calls: Cell::new(0),
+            path_names: RefCell::new(Vec::new()),
+            verified: RefCell::new(Vec::new()),
         }
     }
 }
@@ -38,9 +44,16 @@ impl Backend for FakeBackend {
     fn claude_installed(&self) -> bool {
         self.claude
     }
-    fn verify(&self, _target: &VerifyTarget<'_>) -> KclaudeVerify {
+    fn verify(&self, target: &VerifyTarget<'_>) -> KclaudeVerify {
         self.verify_calls.set(self.verify_calls.get() + 1);
+        let command = match target {
+            VerifyTarget::Posix { command, .. } | VerifyTarget::PowerShell { command } => *command,
+        };
+        self.verified.borrow_mut().push(command.to_string());
         self.verify_result.borrow().clone()
+    }
+    fn on_path(&self, name: &str) -> bool {
+        self.path_names.borrow().iter().any(|n| n == name)
     }
 }
 
@@ -65,6 +78,7 @@ impl Fixture {
         KclaudeEnv {
             home: self.home.clone(),
             data_dir: self.data_dir.clone(),
+            command: "kclaude".to_string(),
             shell_var: shell.map(str::to_string),
             platform,
             documents_dir: Some(self.docs.clone()),
@@ -103,6 +117,7 @@ fn first_run_with_no_zshrc_installs_script_and_block_and_reports_installed() {
     let status = s.install().unwrap();
     assert_eq!(status.state, KclaudeState::Installed);
     assert_eq!(status.shell, ShellKind::Zsh);
+    assert_eq!(status.command_name, "kclaude");
     assert_eq!(status.rc_files, vec!["~/.zshrc".to_string()]);
     assert!(status.claude_installed);
     assert_eq!(status.verify.status, VerifyStatus::Ok);

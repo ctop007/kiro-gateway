@@ -1,6 +1,6 @@
 # desktop/ 规则（Kiro Gateway 桌面端）
 
-一个装好就能用的桌面 App（macOS dmg / Windows NSIS）：把仓库里的 Python 网关打成 sidecar 放进安装包，用一个开关启停它；装上 `kclaude` 命令；检测 kiro-cli 与 Claude Code；展示请求日志与 credits；应用内升级。仓库根 AGENTS.md 的规则同样适用。
+一个装好就能用的桌面 App（macOS dmg / Windows NSIS）：把仓库里的 Python 网关打成 sidecar 放进安装包，用一个开关启停它；装上 `cclaude` 命令（名字可在设置里改，旧称 `kclaude`）；检测 kiro-cli 与 Claude Code；展示请求日志与 credits；应用内升级。仓库根 AGENTS.md 的规则同样适用。
 
 - 行为定义：`openspec/changes/add-desktop-app/`（proposal / design / specs / tasks），归档后在 `openspec/specs/desktop/`。改动和其中的决定矛盾时，先指出哪一条，再问要不要更新。
 - 界面布局、文案、配色以 `docs/mockup/index.html` 为准；`src/styles.css` 的 CSS 变量从它复制，改配色先改 mockup。
@@ -28,15 +28,15 @@
 
 前端没有 fs / shell 权限，所有写盘都在 Rust command 里，范围只有：
 
-- App 数据目录（Tauri `app_data_dir()`，即 `~/Library/Application Support/dev.kirogateway.desktop` / `%APPDATA%\dev.kirogateway.desktop`）：`config.json`、`secret`（0600，原子写）、`logs/`、`runtime/`、`gateway.pid`、`kclaude.*` 脚本、`pending-update.json`、`updates/<版本>.bin`（已下载的更新包）、`upgrade-lock.json`（强制升级必须到达的版本）、`kclaude.removed`（用户移除 kclaude 的标记）。
-- 用户 shell 启动文件里带 `# >>> kiro-gateway-desktop kclaude >>>` / `# <<< kiro-gateway-desktop kclaude <<<` 标记的一段：`~/.zshrc`，或 bash 用户的 `~/.bashrc` / `~/.bash_profile`，或 Windows PowerShell 5 / 7 的 `CurrentUserAllHosts` profile。写前备份为 `<原文件名>.bak-kiro-gateway-YYYYMMDD-HHMMSS`，备份失败就不写。标记段之外的内容逐字节不动；只有用户点「改由 App 管理」时才把旧 kclaude 行注释掉。
+- App 数据目录（Tauri `app_data_dir()`，即 `~/Library/Application Support/dev.kirogateway.desktop` / `%APPDATA%\dev.kirogateway.desktop`）：`config.json`、`secret`（0600，原子写）、`logs/`、`runtime/`、`gateway.pid`、`<命令名>.zsh|bash|ps1` 脚本（默认 `cclaude.*`）与 `kclaude.env`（文件名固定）、`pending-update.json`、`updates/<版本>.bin`（已下载的更新包）、`upgrade-lock.json`（强制升级必须到达的版本）、`kclaude.removed`（用户移除 kclaude 的标记）。
+- 用户 shell 启动文件里带 `# >>> kiro-gateway-desktop command >>>` / `# <<< kiro-gateway-desktop command <<<` 标记的一段（旧版的 `... kclaude >>>` 段识别为本 App 的旧段，安装 / 改名时就地替换；命令名默认 `cclaude`，用户可在设置里改，规则见 `app_config/command_name.rs`）：`~/.zshrc`，或 bash 用户的 `~/.bashrc` / `~/.bash_profile`，或 Windows PowerShell 5 / 7 的 `CurrentUserAllHosts` profile。写前备份为 `<原文件名>.bak-kiro-gateway-YYYYMMDD-HHMMSS`，备份失败就不写。标记段之外的内容逐字节不动；只有用户点「改由 App 管理」时才把旧 kclaude 行注释掉。
 - kiro-cli 数据库只读（`mode=ro`），读出的 token 不出 Rust 函数。
 - 不碰：`claude` 命令本身、`~/.claude/` 下任何文件、全局 `ANTHROPIC_*` 环境变量、PowerShell 执行策略。
 - 测试里一切写盘用临时目录或临时 HOME，绝不写开发者真实的 `~/.zshrc`、profile、`~/.claude/` 或 App 数据目录。
 
 ## 子进程规则
 
-- 只起 Rust 侧写死的命令：网关 sidecar、`$SHELL -lic 'echo $PATH'` / `type kclaude`（各有超时），前端只传枚举，不传命令行。
+- 只起 Rust 侧写死的命令：网关 sidecar、`$SHELL -lic 'echo $PATH'` / `type <命令名>`（各有超时；命令名已通过格式校验才会拼进命令行），前端只传枚举，不传命令行。
 - sidecar 启动前清空继承的 `ANTHROPIC_*`、`PROXY_*`，按 design 决策 2 显式设置环境变量；工作目录是 App 数据目录下的 `runtime/`；只监听 `127.0.0.1`。
 - 只结束自己起的进程：`gateway.pid` 里的 pid 必须存活且可执行文件路径是本 App 的 sidecar 才回收；端口被别的进程占用时只报告进程名和 pid，绝不 kill。
 - macOS 停止顺序 SIGTERM → 5 秒 → SIGKILL；Windows 用 Job Object 绑定子进程，停止用 `TerminateProcess`。App 退出时同步停网关。
@@ -56,7 +56,7 @@
 
 ## 命令（在 desktop/ 下）
 
-- 无窗口验收：`src-tauri/target/debug/kiro-gateway-desktop --selftest`（仅 debug 构建）。在临时 HOME 里走完「无登录时拒绝启动 → 安装 kclaude → 起真 sidecar → `kclaude` 环境变量链路 → 强制升级拒绝 → 停网关无遗留 → 移除逐字节还原」，并比对真实 `~/.zshrc` 等文件的 mtime 与大小。需要先 `make sidecar`；`KGW_SELFTEST_DB` 可换成别的 kiro-cli 数据库（默认用假库，不会触发真实登录的 token 刷新）。
+- 无窗口验收：`src-tauri/target/debug/kiro-gateway-desktop --selftest`（仅 debug 构建）。在临时 HOME 里走完「无登录时拒绝启动 → 安装 kclaude → 起真 sidecar → `cclaude` 环境变量链路 → 强制升级拒绝 → 停网关无遗留 → 改名为 `kclaude-test`（新名可用、旧名消失、一段标记）→ 移除逐字节还原」，并比对真实 `~/.zshrc` 等文件的 mtime 与大小。需要先 `make sidecar`；`KGW_SELFTEST_DB` 可换成别的 kiro-cli 数据库（默认用假库，不会触发真实登录的 token 刷新）。
 - 调试开关（仅 debug 构建）：`KIRO_GATEWAY_UPDATE_URL` 覆盖更新清单地址，只认回环地址，release 构建忽略（有测试）。`KIRO_GATEWAY_SIDECAR` 覆盖 sidecar 路径。
 - macOS 上从 `/tmp` 直接运行 .app 会失败（`/tmp` 是符号链接，Tauri 拒绝解析资源目录）；测试用 `/private/tmp/...`。
 - 环境：Rust 在 `~/.cargo/bin`（Makefile 已加进 PATH），pnpm 管理前端依赖。

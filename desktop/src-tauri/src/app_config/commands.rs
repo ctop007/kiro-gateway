@@ -62,7 +62,12 @@ pub fn config_get(store: State<'_, Arc<ConfigStore>>) -> AppConfig {
 /// The patch is validated first. The autostart toggle (a system call that can fail) runs
 /// before anything is written, so a failure never leaves a half-applied patch. The stored
 /// `autostart` is whatever the system reports afterwards.
-#[tauri::command]
+///
+/// A new `commandName` is also checked against the PATH and the startup files, and the
+/// kclaude scripts and startup-file block are rewritten under the new name (see
+/// `kclaude::rename`). That runs a login shell, so the command is `async` and executes on
+/// the async runtime's thread pool instead of the main thread.
+#[tauri::command(async)]
 pub fn config_update<R: Runtime>(
     app: AppHandle<R>,
     store: State<'_, Arc<ConfigStore>>,
@@ -70,6 +75,17 @@ pub fn config_update<R: Runtime>(
     patch: ConfigPatch,
 ) -> Result<ConfigUpdateResult, CommandError> {
     store.check_patch(&patch)?;
+    // Refuse a taken name before the autostart toggle, so a rejected patch changes nothing.
+    let kclaude_machine = match patch.command_name.as_deref() {
+        Some(name) if name != store.get().command_name => {
+            let (env, backend) = crate::kclaude::commands::env_and_backend(&app)
+                .map_err(|e| CommandError { code: "internal", message: e.message })?;
+            let env = env.with_command(&store.get().command_name);
+            crate::kclaude::rename::check_name(&env, &backend, name)?;
+            Some((env, backend))
+        }
+        _ => None,
+    };
 
     let mut actual_autostart = None;
     if let Some(wanted) = patch.autostart {
@@ -83,7 +99,10 @@ pub fn config_update<R: Runtime>(
 
     let mut patch = patch;
     patch.autostart = None;
-    let UpdateOutcome { config, restart_required } = store.update(&patch, gateway.is_active())?;
+    let UpdateOutcome { config, restart_required } = match &kclaude_machine {
+        Some((env, backend)) => crate::kclaude::rename::apply_update(&store, env, backend, &patch, gateway.is_active())?,
+        None => store.update(&patch, gateway.is_active())?,
+    };
     gateway.apply_port(config.port);
     let config = match actual_autostart {
         Some(actual) => store.sync_autostart(actual)?,

@@ -2,7 +2,7 @@
 //!
 //! Owns everything the App keeps in its data directory about the gateway setup:
 //!
-//! - `config.json`: port, model mapping, autostart, `gatewayWanted`, `upgradeRequired`
+//! - `config.json`: port, command name, model mapping, autostart, `gatewayWanted`, `upgradeRequired`
 //! - `secret`: the access key (the gateway's `PROXY_API_KEY`), 32 random bytes as hex, 0600
 //! - `kclaude.env`: `KEY=VALUE` lines the `kclaude` scripts source on every run, rewritten
 //!   whenever the configuration or the key changes
@@ -10,6 +10,7 @@
 //! Layout:
 //! - `paths`: every file and directory below the App data directory
 //! - `atomic`: temporary file + rename writes (optionally 0600 from the first byte)
+//! - `command_name`: rules for the kclaude command name
 //! - `model`: `AppConfig`, `ConfigPatch`, validation and the error type
 //! - `env_file`: rendering of `kclaude.env`
 //! - `secret`: key generation and validation
@@ -20,6 +21,7 @@
 //! directory and the clock are injected, so tests never touch real files.
 
 pub mod atomic;
+pub mod command_name;
 pub mod env_file;
 pub mod model;
 pub mod paths;

@@ -5,13 +5,20 @@
 //! `Backend` (clock, shell verification, `claude` lookup) is injected, so the whole flow runs
 //! in tests over temporary directories.
 //!
+//! The command the user types is `KclaudeEnv::command` (`cclaude` by default, set in the
+//! App's settings). Script file names, the shell function name, the foreign-definition
+//! check and the login-shell check all follow it.
+//!
 //! Safety rules:
 //! - All startup files are read and planned before anything is written; a refusal
-//!   (foreign kclaude, damaged markers, UTF-16 profile) leaves every file untouched.
+//!   (a foreign definition of the command, damaged markers, UTF-16 profile) leaves every
+//!   file untouched.
 //! - The script in the App data directory is written before the startup file that points
-//!   at it.
+//!   at it. Scripts of a retired name (after a rename, or the legacy `kclaude.*` files
+//!   after a marker migration) are deleted only once every startup file is written.
 //! - Removing the block leaves a `kclaude.removed` marker so the automatic install at App
 //!   start does not bring it back; an explicit install clears it.
+//! - Renaming never adds a second block: the block of the old name is replaced in place.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use super::fsutil::write_atomic;
 use super::ps_profile::{self, profile_paths};
 use super::rc::{self, Dialect, RcState, Refusal};
+use crate::app_config::command_name::{self, NameProblem};
 use super::script::{self, ScriptKind};
 use super::types::{
     ErrorCode, KclaudeError, KclaudeState, KclaudeStatus, KclaudeVerify, ShellKind,
@@ -29,6 +37,9 @@ use super::verify;
 
 /// File in the data directory recording that the user removed kclaude.
 pub const REMOVED_MARKER: &str = "kclaude.removed";
+/// Command name used by builds before the name became configurable; its blocks and scripts
+/// are migrated.
+const LEGACY_COMMAND: &str = "kclaude";
 /// File in the data directory caching the last login-shell check.
 pub const VERIFY_CACHE: &str = "kclaude-verify.json";
 
@@ -64,8 +75,10 @@ impl Platform {
 #[derive(Debug, Clone)]
 pub struct KclaudeEnv {
     pub home: PathBuf,
-    /// App data directory: holds `kclaude.*` scripts and `kclaude.env`.
+    /// App data directory: holds the `<command>.*` scripts and `kclaude.env`.
     pub data_dir: PathBuf,
+    /// The command name (`AppConfig.commandName`), already validated by the config layer.
+    pub command: String,
     /// Value of `$SHELL`.
     pub shell_var: Option<String>,
     pub platform: Platform,
@@ -73,11 +86,18 @@ pub struct KclaudeEnv {
     pub documents_dir: Option<PathBuf>,
 }
 
+impl KclaudeEnv {
+    /// The same machine with another command name.
+    pub fn with_command(&self, command: &str) -> Self {
+        Self { command: command.to_string(), ..self.clone() }
+    }
+}
+
 /// What the post-install check should run.
 #[derive(Debug, Clone, Copy)]
 pub enum VerifyTarget<'a> {
-    Posix { shell: &'a Path, home: &'a Path },
-    PowerShell,
+    Posix { shell: &'a Path, home: &'a Path, command: &'a str },
+    PowerShell { command: &'a str },
 }
 
 /// Side effects the service delegates, so tests can replace them.
@@ -86,8 +106,10 @@ pub trait Backend {
     fn stamp(&self) -> String;
     /// Whether Claude Code is installed.
     fn claude_installed(&self) -> bool;
-    /// Check that a fresh shell knows `kclaude`.
+    /// Check that a fresh shell knows the command.
     fn verify(&self, target: &VerifyTarget<'_>) -> KclaudeVerify;
+    /// Whether an executable called `name` exists on the login-shell PATH.
+    fn on_path(&self, name: &str) -> bool;
 }
 
 /// One startup file under management.
@@ -107,8 +129,8 @@ fn err(code: ErrorCode, message: &str) -> KclaudeError {
     KclaudeError::new(code, message)
 }
 
-const MSG_DAMAGED: &str = "启动文件里的 kclaude 标记不完整，App 没有改动它。删除残缺的标记行后重试";
-const MSG_UNPARSABLE: &str = "启动文件里已有的 kclaude 写法 App 看不懂，没有改动它。请手动处理后重试";
+const MSG_DAMAGED: &str = "启动文件里的 App 标记不完整，App 没有改动它。删除残缺的标记行后重试";
+const MSG_UNPARSABLE: &str = "启动文件里已有的同名写法 App 看不懂，没有改动它。请手动处理后重试";
 const MSG_NO_DOCUMENTS: &str = "找不到「文档」文件夹，没能确定 PowerShell profile 的位置";
 const MSG_UTF16: &str = "PowerShell profile 是 UTF-16 编码，App 没有改动它。请另存为 UTF-8 后重试";
 const MSG_READ: &str = "读取启动文件失败。检查文件权限后重试";
@@ -140,8 +162,12 @@ impl<'a> KclaudeService<'a> {
         }
     }
 
+    fn command(&self) -> &str {
+        &self.env.command
+    }
+
     fn script_path(&self) -> PathBuf {
-        self.env.data_dir.join(self.script_kind().file_name())
+        self.env.data_dir.join(self.script_kind().file_name(self.command()))
     }
 
     fn expected_block(&self) -> String {
@@ -210,6 +236,23 @@ impl<'a> KclaudeService<'a> {
     /// Like [`status`](Self::status); `force_verify` runs the login-shell check even when a
     /// cached result still matches (install, adopt and remove always re-check).
     fn status_with(&self, force_verify: bool) -> KclaudeStatus {
+        let state = self.state();
+        let verify = match state {
+            KclaudeState::Installed | KclaudeState::Outdated => self.verify_cached(force_verify),
+            _ => KclaudeVerify::skipped(self.command()),
+        };
+        KclaudeStatus {
+            command_name: self.command().to_string(),
+            state,
+            shell: self.shell_kind(),
+            rc_files: self.rc_display(),
+            claude_installed: self.backend.claude_installed(),
+            verify,
+        }
+    }
+
+    /// Install state of the current command name, from the startup files and the script.
+    fn state(&self) -> KclaudeState {
         let block = self.expected_block();
         let dialect = self.dialect();
         let states: Vec<RcState> = self
@@ -217,23 +260,12 @@ impl<'a> KclaudeService<'a> {
             .map(|targets| {
                 targets
                     .iter()
-                    .map(|t| rc::analyze(&t.content, dialect).state(&block))
+                    .map(|t| rc::analyze(&t.content, dialect, self.command()).state(&block))
                     .collect()
             })
             .unwrap_or_default();
-        let script_current = script::is_current(self.script_kind(), &self.env.data_dir);
-        let state = combine_states(&states, script_current);
-        let verify = match state {
-            KclaudeState::Installed | KclaudeState::Outdated => self.verify_cached(force_verify),
-            _ => KclaudeVerify::skipped(),
-        };
-        KclaudeStatus {
-            state,
-            shell: self.shell_kind(),
-            rc_files: self.rc_display(),
-            claude_installed: self.backend.claude_installed(),
-            verify,
-        }
+        let script_current = script::is_current(self.script_kind(), self.command(), &self.env.data_dir);
+        combine_states(&states, script_current)
     }
 
     /// The login-shell check, spawning a shell only when there is no cached result for the
@@ -259,10 +291,12 @@ impl<'a> KclaudeService<'a> {
         verify
     }
 
-    /// Identifies what the check depends on: shell, startup files (modification time and
-    /// size) and the script kind. A change to any of them invalidates the cached result.
+    /// Identifies what the check depends on: the command name, shell, startup files
+    /// (modification time and size) and the script kind. A change to any of them
+    /// invalidates the cached result.
     fn verify_fingerprint(&self) -> String {
         let mut parts = vec![
+            format!("cmd={}", self.command()),
             format!("{:?}", self.shell_kind()),
             self.env.shell_var.clone().unwrap_or_default(),
         ];
@@ -284,9 +318,15 @@ impl<'a> KclaudeService<'a> {
         parts.join("|")
     }
 
+    /// The fingerprint, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn verify_fingerprint_for_tests(&self) -> String {
+        self.verify_fingerprint()
+    }
+
     fn run_verify(&self) -> KclaudeVerify {
         match self.shell_kind() {
-            ShellKind::Powershell => self.backend.verify(&VerifyTarget::PowerShell),
+            ShellKind::Powershell => self.backend.verify(&VerifyTarget::PowerShell { command: self.command() }),
             kind => {
                 let named = self
                     .env
@@ -294,7 +334,7 @@ impl<'a> KclaudeService<'a> {
                     .as_deref()
                     .filter(|s| rc::shell_from_env(Some(s)) == kind && is_known_shell_name(s));
                 let shell = named.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/bin/zsh"));
-                self.backend.verify(&VerifyTarget::Posix { shell: &shell, home: &self.env.home })
+                self.backend.verify(&VerifyTarget::Posix { shell: &shell, home: &self.env.home, command: self.command() })
             }
         }
     }
@@ -323,7 +363,7 @@ impl<'a> KclaudeService<'a> {
         self.check_writable(&targets)?;
         let mut plans = Vec::new();
         for t in &targets {
-            match rc::plan_remove(&t.content, dialect) {
+            match rc::plan_remove(&t.content, dialect, self.command()) {
                 Ok(Some(bytes)) => plans.push((t, bytes)),
                 Ok(None) => {}
                 Err(_) => return Err(err(ErrorCode::WriteFailed, MSG_DAMAGED)),
@@ -359,10 +399,10 @@ impl<'a> KclaudeService<'a> {
 
         if mode == Mode::Adopt {
             let any_foreign = targets.iter().any(|t| {
-                matches!(rc::analyze(&t.content, dialect).state(&block), RcState::Foreign | RcState::Damaged)
+                matches!(rc::analyze(&t.content, dialect, self.command()).state(&block), RcState::Foreign | RcState::Damaged)
             });
             if !any_foreign {
-                return Err(err(ErrorCode::InvalidArgument, "没有检测到需要接管的 kclaude"));
+                return Err(err(ErrorCode::InvalidArgument, "没有检测到需要接管的同名命令"));
             }
         }
 
@@ -370,8 +410,8 @@ impl<'a> KclaudeService<'a> {
         let mut plans: Vec<(&RcTarget, Vec<u8>)> = Vec::new();
         for t in &targets {
             let planned = match mode {
-                Mode::Install => rc::plan_install(&t.content, dialect, &block),
-                Mode::Adopt => rc::plan_adopt(&t.content, dialect, &block),
+                Mode::Install => rc::plan_install(&t.content, dialect, self.command(), &block),
+                Mode::Adopt => rc::plan_adopt(&t.content, dialect, self.command(), &block),
             };
             match planned {
                 Ok(Some(bytes)) => plans.push((t, bytes)),
@@ -379,7 +419,7 @@ impl<'a> KclaudeService<'a> {
                 Err(Refusal::Foreign) => {
                     return Err(err(
                         ErrorCode::ForeignPresent,
-                        "检测到已有 kclaude，未改动。点「改由 App 管理」后再安装",
+                        "检测到启动文件里已有同名命令，未改动。点「改由 App 管理」后再安装",
                     ))
                 }
                 Err(Refusal::Damaged) if mode == Mode::Install => {
@@ -392,14 +432,76 @@ impl<'a> KclaudeService<'a> {
             }
         }
 
-        script::install(self.script_kind(), &self.env.data_dir)
-            .map_err(|_| err(ErrorCode::WriteFailed, "写入 kclaude 脚本失败。检查磁盘空间后重试"))?;
+        let migrating = targets.iter().any(|t| rc::analyze(&t.content, dialect, self.command()).has_legacy_block());
+
+        script::install(self.script_kind(), self.command(), &self.env.data_dir)
+            .map_err(|_| err(ErrorCode::WriteFailed, "写入命令脚本失败。检查磁盘空间后重试"))?;
         let stamp = self.backend.stamp();
         for (t, bytes) in plans {
             rc::apply(&t.path, &bytes, &stamp)?;
         }
         let _ = fs::remove_file(self.removed_marker());
+        if migrating && self.command() != LEGACY_COMMAND {
+            // The legacy block now points at the new script; the old `kclaude.*` files are dead.
+            script::remove_all(LEGACY_COMMAND, &self.env.data_dir);
+        }
         Ok(())
+    }
+
+    /// Switch from the command `old` to the command of this service (`env.command`).
+    ///
+    /// The block of the old name is replaced in place (one block, one backup per file), the
+    /// new script is written first, and the scripts of the old name are deleted once the
+    /// startup files are written. When the command is not under the App's management (a
+    /// foreign definition of the old name, damaged markers, or removed by the user) nothing
+    /// is written: the name is only a setting.
+    ///
+    /// Args:
+    ///     old: The command name that was in effect before.
+    ///
+    /// Returns:
+    ///     The state under the new name, after a fresh login-shell check when written.
+    ///     `ForeignPresent` when the new name is already defined in a startup file, plus the
+    ///     errors of [`install`](Self::install).
+    pub fn rename_from(&self, old: &str) -> Result<KclaudeStatus, KclaudeError> {
+        if old == self.command() {
+            return self.install();
+        }
+        let before = self.with_command_name(old).state();
+        let managed = !matches!(before, KclaudeState::Foreign) && !self.removed_marker().exists();
+        if !managed {
+            return Ok(self.status());
+        }
+        self.write_all(Mode::Install)?;
+        script::remove_all(old, &self.env.data_dir);
+        Ok(self.status_with(true))
+    }
+
+    fn with_command_name(&self, command: &str) -> KclaudeService<'a> {
+        KclaudeService { env: self.env.with_command(command), backend: self.backend }
+    }
+
+    /// Why `name` cannot be used as the command name on this machine, or `None` when it is free.
+    ///
+    /// Checks the format and the reserved names, then an executable of that name on the PATH,
+    /// then a function, alias or `source` of that name in the startup files. The App's own
+    /// blocks do not count: the name the App manages now is never "taken" by itself.
+    pub fn name_problem(&self, name: &str) -> Option<NameProblem> {
+        if let Err(problem) = command_name::validate(name) {
+            return Some(problem);
+        }
+        if name == self.command() {
+            return None;
+        }
+        if self.backend.on_path(name) {
+            return Some(NameProblem::Taken);
+        }
+        let dialect = self.dialect();
+        let defined_in_rc = self
+            .load_targets()
+            .map(|targets| targets.iter().any(|t| rc::analyze(&t.content, dialect, name).defines_command()))
+            .unwrap_or(false);
+        defined_in_rc.then_some(NameProblem::Taken)
     }
 }
 
@@ -459,6 +561,22 @@ pub fn find_claude(dirs: &[PathBuf], windows: bool) -> Option<PathBuf> {
         .find(|p| is_executable_file(p))
 }
 
+/// True when a runnable file called `name` (with the Windows executable suffixes when
+/// `windows`) exists in one of the absolute directories in `dirs`.
+///
+/// Relative entries are skipped so an empty PATH element never resolves against the
+/// App's working directory.
+pub fn executable_in_dirs(dirs: &[PathBuf], name: &str, windows: bool) -> bool {
+    let candidates: Vec<String> = if windows {
+        ["", ".exe", ".cmd", ".bat", ".com", ".ps1"].iter().map(|ext| format!("{name}{ext}")).collect()
+    } else {
+        vec![name.to_string()]
+    };
+    dirs.iter()
+        .filter(|d| d.is_absolute())
+        .any(|d| candidates.iter().any(|c| is_executable_file(&d.join(c))))
+}
+
 fn is_executable_file(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else { return false };
     if !meta.is_file() {
@@ -499,18 +617,25 @@ impl Backend for SystemBackend {
 
     fn verify(&self, target: &VerifyTarget<'_>) -> KclaudeVerify {
         match target {
-            VerifyTarget::Posix { shell, home } => {
-                let outcome = verify::run_shell(shell, &verify::LOGIN_TYPE_ARGS, home, verify::VERIFY_TIMEOUT);
-                verify::verify_posix(&outcome)
+            VerifyTarget::Posix { shell, home, command } => {
+                let args = verify::login_type_args(command);
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                let outcome = verify::run_shell(shell, &args, home, verify::VERIFY_TIMEOUT);
+                verify::verify_posix(&outcome, command)
             }
-            VerifyTarget::PowerShell => {
+            VerifyTarget::PowerShell { command } => {
                 let hint = ps_profile::execution_policy_hint(&current_policy_sources());
                 let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
-                let args = ["-NoLogo", "-NonInteractive", "-Command", "(Get-Command kclaude -ErrorAction SilentlyContinue).CommandType"];
+                let query = format!("(Get-Command {command} -ErrorAction SilentlyContinue).CommandType");
+                let args = ["-NoLogo", "-NonInteractive", "-Command", query.as_str()];
                 let outcome = verify::run_shell(Path::new("powershell.exe"), &args, &home, verify::VERIFY_TIMEOUT);
-                verify::verify_powershell(&outcome, hint)
+                verify::verify_powershell(&outcome, command, hint)
             }
         }
+    }
+
+    fn on_path(&self, name: &str) -> bool {
+        executable_in_dirs(&self.claude_dirs, name, cfg!(windows))
     }
 }
 

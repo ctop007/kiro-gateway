@@ -1,14 +1,16 @@
 //! Tauri glue for the kclaude commands (`kclaude_status`, `kclaude_install`, `kclaude_adopt`,
-//! `kclaude_remove`) and the startup auto-install. All logic lives in [`super::service`].
+//! `kclaude_remove`), the startup auto-install and the command-name change used by
+//! `config_update`. All logic lives in [`super::service`] and [`super::rename`].
 //!
 //! Errors reach the frontend as `{ code, message }` (see `docs/ipc-contract.md`).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use super::service::{KclaudeEnv, KclaudeService, Platform, SystemBackend};
+use crate::app_config::ConfigStore;
 use super::types::{ErrorCode, KclaudeError, KclaudeStatus};
 
 /// Directories searched for `claude`, set by the environment-check module once it has the
@@ -46,7 +48,7 @@ fn default_claude_dirs(home: &std::path::Path) -> Vec<PathBuf> {
 /// Point the `claude` lookup at the login-shell PATH (probed once and cached by the
 /// environment check) plus the usual install locations. Call once after the environment
 /// check, so a GUI launch with a short PATH still finds `claude`.
-pub fn refresh_search_dirs(app: &AppHandle) {
+pub fn refresh_search_dirs<R: Runtime>(app: &AppHandle<R>) {
     let Some(home) = home_dir() else { return };
     let mut dirs: Vec<PathBuf> = crate::env_check::which::cached_shell_path()
         .map(|p| std::env::split_paths(&p).collect())
@@ -57,12 +59,14 @@ pub fn refresh_search_dirs(app: &AppHandle) {
     }
 }
 
-/// The machine description the service works from: user home, data directory, `$SHELL`.
-/// Shared by the commands and the debug self-test (which points `HOME` at a temp dir).
-pub fn make_env(home: PathBuf, data_dir: PathBuf) -> KclaudeEnv {
+/// The machine description the service works from: user home, data directory, command name,
+/// `$SHELL`. Shared by the commands and the debug self-test (which points `HOME` at a temp
+/// dir).
+pub fn make_env(home: PathBuf, data_dir: PathBuf, command: &str) -> KclaudeEnv {
     KclaudeEnv {
         home,
         data_dir,
+        command: command.to_string(),
         shell_var: std::env::var("SHELL").ok(),
         platform: Platform::current(),
         #[cfg(windows)]
@@ -82,7 +86,7 @@ pub fn search_dirs(configured: &[PathBuf], home: &std::path::Path) -> Vec<PathBu
     }
 }
 
-fn build(app: &AppHandle, dirs: &State<'_, ClaudeSearchDirs>) -> Result<(KclaudeEnv, SystemBackend), KclaudeError> {
+fn build<R: Runtime>(app: &AppHandle<R>, dirs: &State<'_, ClaudeSearchDirs>) -> Result<(KclaudeEnv, SystemBackend), KclaudeError> {
     let internal = |m: &str| KclaudeError::new(ErrorCode::Internal, m);
     let home = home_dir().ok_or_else(|| internal("找不到用户目录"))?;
     let data_dir = app
@@ -91,7 +95,11 @@ fn build(app: &AppHandle, dirs: &State<'_, ClaudeSearchDirs>) -> Result<(Kclaude
         .map_err(|_| internal("找不到 App 数据目录"))?;
     let configured = dirs.0.lock().map(|g| g.clone()).unwrap_or_default();
     let search = search_dirs(&configured, &home);
-    Ok((make_env(home.clone(), data_dir), SystemBackend::new(search)))
+    let command = app
+        .try_state::<Arc<ConfigStore>>()
+        .map(|store| store.get().command_name)
+        .ok_or_else(|| internal("配置还没准备好"))?;
+    Ok((make_env(home.clone(), data_dir, &command), SystemBackend::new(search)))
 }
 
 async fn run_blocking<F>(app: AppHandle, f: F) -> Result<KclaudeStatus, KclaudeError>
@@ -133,4 +141,16 @@ pub fn auto_install(app: &AppHandle) -> Result<KclaudeStatus, KclaudeError> {
     let dirs = app.state::<ClaudeSearchDirs>();
     let (env, backend) = build(app, &dirs)?;
     Ok(KclaudeService::new(env, &backend).auto_install())
+}
+
+/// Machine description and backend for `config_update`, which needs both before and after
+/// the new name is saved.
+///
+/// The login-shell PATH is probed first (cached after the first call, 3 second limit), so a
+/// name that only exists on the terminal's PATH is recognised as taken even when the App was
+/// started from Finder with a short PATH.
+pub fn env_and_backend<R: Runtime>(app: &AppHandle<R>) -> Result<(KclaudeEnv, SystemBackend), KclaudeError> {
+    refresh_search_dirs(app);
+    let dirs = app.state::<ClaudeSearchDirs>();
+    build(app, &dirs)
 }

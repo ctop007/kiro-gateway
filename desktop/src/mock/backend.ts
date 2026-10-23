@@ -28,6 +28,7 @@ import type {
   UpdateStatus,
   UsageSummary
 } from '@/lib/ipc-types'
+import { DEFAULT_COMMAND_NAME, parseCommandName } from '@/features/command-name/view'
 
 export interface Scenario {
   gateway: 'stopped' | 'running' | 'crashed' | 'port_in_use' | 'login_expired' | 'timeout'
@@ -81,7 +82,7 @@ function iso(d: Date): string {
   )
 }
 
-function checkItems(env: Scenario['env']): CheckItem[] {
+function checkItems(env: Scenario['env'], commandName: string): CheckItem[] {
   const cliOk = env !== 'no_cli'
   const loginOk = cliOk && env !== 'no_login'
   const validOk = loginOk && env !== 'expired'
@@ -119,7 +120,7 @@ function checkItems(env: Scenario['env']): CheckItem[] {
           id: 'claude_installed',
           status: 'fail',
           title: '没找到 Claude Code',
-          detail: '网关照样能开，但 kclaude 要等装好 Claude Code 才能用',
+          detail: `网关照样能开，但 ${commandName} 要等装好 Claude Code 才能用`,
           fix: { kind: 'open_url', label: '查看安装方法', url: 'https://docs.claude.com/en/docs/claude-code/setup' }
         }
   ]
@@ -161,12 +162,16 @@ function seedRecords(now: Date): RequestRecord[] {
   ]
 }
 
+/** Names the mock pretends are already on PATH, to exercise the "already taken" message. */
+const TAKEN_NAMES = ['rg', 'fd', 'make']
+
 export function createMockBackend(options: MockOptions = {}): MockBackend {
   const startDelayMs = options.startDelayMs ?? 1400
   let scenario: Scenario = { ...DEFAULT_SCENARIO, ...options.scenario }
   const listeners = new Map<EventName, Set<(p: never) => void>>()
 
-  let port = 8000
+  let port = 6868
+  let commandName = DEFAULT_COMMAND_NAME
   const models: Record<ModelTier, string> = {
     opus: 'claude-opus-5-5[1m]',
     sonnet: 'claude-sonnet-5-5[1m]',
@@ -360,6 +365,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
   }
 
   const kclaude = (): KclaudeStatus => ({
+    commandName,
     state: kclaudeState,
     shell: 'zsh',
     rcFiles: ['~/.zshrc'],
@@ -371,7 +377,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
   })
 
   const envReport = (): EnvReport => {
-    const items = checkItems(scenario.env)
+    const items = checkItems(scenario.env, commandName)
     const cliOk = scenario.env !== 'no_cli'
     return {
       checkedAt: iso(new Date()),
@@ -387,6 +393,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
 
   const config = (): AppConfig => ({
     port,
+    commandName,
     models: { ...models },
     autostart,
     gatewayWanted,
@@ -405,12 +412,22 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       if (patch.port !== undefined && (!Number.isInteger(patch.port) || patch.port < 1024 || patch.port > 65535)) {
         throw new MockError('invalid_argument', '端口要在 1024 到 65535 之间')
       }
+      let nextName: string | null = null
+      if (patch.commandName !== undefined) {
+        const parsed = parseCommandName(patch.commandName)
+        if (!parsed.ok) throw new MockError('invalid_argument', parsed.message)
+        if (parsed.name !== commandName && TAKEN_NAMES.includes(parsed.name)) {
+          throw new MockError('invalid_argument', '这个名字已经被占用')
+        }
+        nextName = parsed.name
+      }
       for (const [tier, id] of Object.entries(patch.models ?? {})) {
         if (!id || !id.trim()) throw new MockError('invalid_argument', `${tier} 的模型不能为空`)
       }
       const live = gateway.state === 'running' || gateway.state === 'starting'
       const portChanged = patch.port !== undefined && patch.port !== port
       if (patch.port !== undefined) port = patch.port
+      if (nextName !== null) commandName = nextName
       Object.assign(models, patch.models ?? {})
       if (patch.autostart !== undefined) autostart = patch.autostart
       if (portChanged && !live) setGateway({ ...gateway, port })
@@ -460,13 +477,13 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
     kclaude_status: () => kclaude(),
     kclaude_install: () => {
       if (kclaudeState === 'foreign') {
-        throw new MockError('foreign_present', '~/.zshrc 里已有不是本 App 写入的 kclaude')
+        throw new MockError('foreign_present', `~/.zshrc 里已有不是本 App 写入的 ${commandName}`)
       }
       kclaudeState = 'installed'
       return kclaude()
     },
     kclaude_adopt: () => {
-      if (kclaudeState !== 'foreign') throw new MockError('invalid_argument', '当前没有需要接管的 kclaude')
+      if (kclaudeState !== 'foreign') throw new MockError('invalid_argument', `当前没有需要接管的 ${commandName}`)
       kclaudeState = 'installed'
       return kclaude()
     },

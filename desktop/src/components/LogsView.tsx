@@ -11,6 +11,7 @@ import {
   summaryView,
   type LogFilters
 } from '@/features/request-log/view'
+import { logsEmptyHint } from '@/features/command-name/view'
 
 export function LogsView({ app }: { app: AppState }) {
   const [filters, setFilters] = useState<LogFilters>({ result: 'all', model: null })
@@ -38,6 +39,7 @@ export function LogsView({ app }: { app: AppState }) {
 
   const summary = log ? summaryView(log) : null
   const bars = log ? modelBars(log) : []
+  const emptyHint = logsEmptyHint(app.commandName)
   const state = emptyState(log?.records.length ?? 0, shown.length)
 
   const doClear = async () => {
@@ -111,7 +113,9 @@ export function LogsView({ app }: { app: AppState }) {
 
       {state === 'none' && (
         <div className="empty">
-          还没有请求。在终端运行 <code>kclaude</code> 试试，请求结束后会出现在这里。
+          {emptyHint.before}
+          <code>{emptyHint.code}</code>
+          {emptyHint.after}
         </div>
       )}
       {state === 'filtered' && <div className="empty">没有符合筛选条件的请求。</div>}

@@ -10,7 +10,11 @@
 //!   comments out a pre-existing foreign kclaude definition.
 //! - `plan_remove` is the exact inverse of appending: install then remove gives back the
 //!   original bytes, including a missing trailing newline.
-//! - An existing kclaude without our markers is `Foreign` and is never overwritten.
+//! - An existing definition of the command (named by the `command` argument) without our
+//!   markers is `Foreign` and is never overwritten.
+//! - The legacy marker pair (`... kclaude >>>`, written by builds before the command name
+//!   became configurable) is our own block too: it is replaced in place on install and
+//!   removed on remove, and never counts as foreign.
 
 use std::borrow::Cow;
 use std::fs;
@@ -21,8 +25,11 @@ use super::fsutil::{backup_path, write_atomic};
 use super::script::{ps_string_expr, sh_quote};
 use super::types::{ErrorCode, KclaudeError, ShellKind};
 
-pub const BEGIN_MARKER: &str = "# >>> kiro-gateway-desktop kclaude >>>";
-pub const END_MARKER: &str = "# <<< kiro-gateway-desktop kclaude <<<";
+pub const BEGIN_MARKER: &str = "# >>> kiro-gateway-desktop command >>>";
+pub const END_MARKER: &str = "# <<< kiro-gateway-desktop command <<<";
+/// Marker pair written by the first builds, when the command was always `kclaude`.
+pub const LEGACY_BEGIN_MARKER: &str = "# >>> kiro-gateway-desktop kclaude >>>";
+pub const LEGACY_END_MARKER: &str = "# <<< kiro-gateway-desktop kclaude <<<";
 pub const DISABLED_PREFIX: &str = "# disabled by Kiro Gateway App: ";
 
 /// Syntax family of the startup file.
@@ -38,7 +45,7 @@ pub enum RcState {
     NotInstalled,
     Installed,
     Outdated,
-    /// A kclaude without our markers is defined in the file.
+    /// The command is defined in the file without our markers.
     Foreign,
     /// Unbalanced or nested markers: the extent of our block is unknown, so nothing is touched.
     Damaged,
@@ -106,7 +113,7 @@ fn detect_eol(bytes: &[u8]) -> &'static str {
 ///
 /// Args:
 ///     dialect: Posix or PowerShell.
-///     script_path: Absolute path of `kclaude.zsh` / `.bash` / `.ps1`.
+///     script_path: Absolute path of `<command>.zsh` / `.bash` / `.ps1`.
 pub fn block_text(dialect: Dialect, script_path: &Path) -> String {
     let path = script_path.to_string_lossy();
     let body = match dialect {
@@ -135,31 +142,39 @@ pub struct Analysis<'a> {
     dialect: Dialect,
 }
 
-/// Scan `bytes` for our marker blocks and for foreign kclaude definitions.
-pub fn analyze(bytes: &[u8], dialect: Dialect) -> Analysis<'_> {
+/// Scan `bytes` for our marker blocks (current and legacy) and for foreign definitions of
+/// `command`.
+///
+/// Args:
+///     bytes: Startup file content.
+///     dialect: Syntax family.
+///     command: The command name being managed (`cclaude` by default).
+pub fn analyze<'a>(bytes: &'a [u8], dialect: Dialect, command: &str) -> Analysis<'a> {
     let lines = split_lines(bytes);
     let mut blocks = Vec::new();
-    let mut open: Option<usize> = None;
+    // Line of the open marker and whether it is the legacy kind.
+    let mut open: Option<(usize, bool)> = None;
     let mut damaged = false;
     for (i, line) in lines.iter().enumerate() {
         let text = line_text(bytes, line);
         let trimmed = text.trim();
-        if trimmed == BEGIN_MARKER {
+        if trimmed == BEGIN_MARKER || trimmed == LEGACY_BEGIN_MARKER {
             if open.is_some() {
                 damaged = true;
             }
-            open = Some(i);
-        } else if trimmed == END_MARKER {
+            open = Some((i, trimmed == LEGACY_BEGIN_MARKER));
+        } else if trimmed == END_MARKER || trimmed == LEGACY_END_MARKER {
             match open.take() {
-                Some(b) => blocks.push((b, i)),
-                None => damaged = true,
+                // A begin and an end of different generations do not belong together.
+                Some((b, legacy)) if legacy == (trimmed == LEGACY_END_MARKER) => blocks.push((b, i)),
+                Some(_) | None => damaged = true,
             }
         }
     }
     if open.is_some() {
         damaged = true;
     }
-    let foreign = find_foreign(bytes, &lines, &blocks, dialect);
+    let foreign = find_foreign(bytes, &lines, &blocks, dialect, command);
     Analysis { bytes, lines, blocks, damaged, foreign, dialect }
 }
 
@@ -193,6 +208,18 @@ impl Analysis<'_> {
         actual.iter().map(String::as_str).eq(want.iter().copied())
     }
 
+    /// True when a block written under the legacy marker pair is present.
+    pub fn has_legacy_block(&self) -> bool {
+        self.blocks.iter().any(|&(b0, _)| line_text(self.bytes, &self.lines[b0]).trim() == LEGACY_BEGIN_MARKER)
+    }
+
+    /// True when the file defines the command outside our blocks: a function, an alias or
+    /// a `source` of a file named after it. A definition whose extent cannot be determined
+    /// counts as a definition.
+    pub fn defines_command(&self) -> bool {
+        !matches!(&self.foreign, Ok(v) if v.is_empty())
+    }
+
     fn refusal(&self) -> Option<Refusal> {
         if self.damaged {
             Some(Refusal::Damaged)
@@ -220,6 +247,7 @@ impl Analysis<'_> {
 /// Args:
 ///     bytes: Current content (empty for a missing file).
 ///     dialect: Syntax family.
+///     command: The command name being managed.
 ///     expected_block: Output of [`block_text`].
 ///
 /// Returns:
@@ -228,9 +256,10 @@ impl Analysis<'_> {
 pub fn plan_install(
     bytes: &[u8],
     dialect: Dialect,
+    command: &str,
     expected_block: &str,
 ) -> Result<Option<Vec<u8>>, Refusal> {
-    let analysis = analyze(bytes, dialect);
+    let analysis = analyze(bytes, dialect, command);
     if let Some(r) = analysis.refusal() {
         return Err(r);
     }
@@ -251,9 +280,10 @@ pub fn plan_install(
 pub fn plan_adopt(
     bytes: &[u8],
     dialect: Dialect,
+    command: &str,
     expected_block: &str,
 ) -> Result<Option<Vec<u8>>, Refusal> {
-    let analysis = analyze(bytes, dialect);
+    let analysis = analyze(bytes, dialect, command);
     match analysis.refusal() {
         Some(Refusal::Damaged) => return Err(Refusal::Damaged),
         Some(Refusal::UnparsableForeign) => return Err(Refusal::UnparsableForeign),
@@ -266,7 +296,7 @@ pub fn plan_adopt(
         Some(comment_regions(&analysis, &regions))
     };
     let base: &[u8] = commented.as_deref().unwrap_or(bytes);
-    match plan_install(base, dialect, expected_block)? {
+    match plan_install(base, dialect, command, expected_block)? {
         Some(next) => Ok(Some(next)),
         None => Ok(commented),
     }
@@ -274,8 +304,8 @@ pub fn plan_adopt(
 
 /// Compute the file content after removing our block(s). Everything else stays byte for
 /// byte. Returns `Ok(None)` when there is no block, `Err(Damaged)` for unbalanced markers.
-pub fn plan_remove(bytes: &[u8], dialect: Dialect) -> Result<Option<Vec<u8>>, Refusal> {
-    let analysis = analyze(bytes, dialect);
+pub fn plan_remove(bytes: &[u8], dialect: Dialect, command: &str) -> Result<Option<Vec<u8>>, Refusal> {
+    let analysis = analyze(bytes, dialect, command);
     if analysis.damaged {
         return Err(Refusal::Damaged);
     }
@@ -412,6 +442,7 @@ fn find_foreign(
     lines: &[Line],
     blocks: &[(usize, usize)],
     dialect: Dialect,
+    command: &str,
 ) -> Result<Vec<(usize, usize)>, ()> {
     let in_block = |i: usize| blocks.iter().any(|&(a, b)| i >= a && i <= b);
     let mut regions: Vec<(usize, usize)> = Vec::new();
@@ -422,7 +453,7 @@ fn find_foreign(
             continue;
         }
         let text = line_text(bytes, &lines[i]);
-        let Some(kind) = classify_line(&text, dialect) else {
+        let Some(kind) = classify_line(&text, dialect, command) else {
             i += 1;
             continue;
         };
@@ -487,7 +518,7 @@ fn function_end(bytes: &[u8], lines: &[Line], from: usize, dialect: Dialect) -> 
     Err(())
 }
 
-fn classify_line(text: &str, dialect: Dialect) -> Option<ForeignKind> {
+fn classify_line(text: &str, dialect: Dialect, command: &str) -> Option<ForeignKind> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return None;
@@ -505,7 +536,7 @@ fn classify_line(text: &str, dialect: Dialect) -> Option<ForeignKind> {
                 None => break,
             }
         }
-        if let Some(kind) = classify_segment(seg, dialect) {
+        if let Some(kind) = classify_segment(seg, dialect, command) {
             return Some(kind);
         }
     }
@@ -516,13 +547,30 @@ fn is_name_end(rest: &str) -> bool {
     rest.chars().next().map_or(true, |c| c.is_whitespace() || matches!(c, '(' | '{'))
 }
 
-fn classify_segment(seg: &str, dialect: Dialect) -> Option<ForeignKind> {
+/// True for characters that can be part of a command name.
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
+}
+
+/// True when `name` appears in `haystack` as a whole word: not preceded or followed by
+/// another name character. `kclaude` is in `~/x/kclaude.zsh` but not in `~/x/kclaude-old.zsh`
+/// or `~/x/xkclaude.zsh`.
+fn mentions_word(haystack: &str, name: &str) -> bool {
+    haystack.match_indices(name).any(|(at, _)| {
+        let before = haystack[..at].chars().next_back();
+        let after = haystack[at + name.len()..].chars().next();
+        !before.is_some_and(is_name_char) && !after.is_some_and(is_name_char)
+    })
+}
+
+fn classify_segment(seg: &str, dialect: Dialect, command: &str) -> Option<ForeignKind> {
     let lower = seg.to_ascii_lowercase();
+    let lower_name = command.to_ascii_lowercase();
     match dialect {
         Dialect::Posix => {
             for kw in ["source", "."] {
                 if let Some(rest) = seg.strip_prefix(kw) {
-                    if rest.starts_with([' ', '\t']) && rest.contains("kclaude") {
+                    if rest.starts_with([' ', '\t']) && mentions_word(rest, command) {
                         return Some(ForeignKind::Source);
                     }
                 }
@@ -530,21 +578,21 @@ fn classify_segment(seg: &str, dialect: Dialect) -> Option<ForeignKind> {
             if let Some(rest) = seg.strip_prefix("alias") {
                 if rest.starts_with([' ', '\t']) {
                     let name = skip_alias_flags(rest.trim_start());
-                    if name.starts_with("kclaude=") {
+                    if name.strip_prefix(command).is_some_and(|after| after.starts_with('=')) {
                         return Some(ForeignKind::Alias);
                     }
                 }
             }
             if let Some(rest) = seg.strip_prefix("function") {
                 if rest.starts_with([' ', '\t']) {
-                    if let Some(after) = rest.trim_start().strip_prefix("kclaude") {
+                    if let Some(after) = rest.trim_start().strip_prefix(command) {
                         if is_name_end(after) {
                             return Some(ForeignKind::Function);
                         }
                     }
                 }
             }
-            if let Some(after) = seg.strip_prefix("kclaude") {
+            if let Some(after) = seg.strip_prefix(command) {
                 if after.trim_start().starts_with('(') {
                     return Some(ForeignKind::Function);
                 }
@@ -553,13 +601,13 @@ fn classify_segment(seg: &str, dialect: Dialect) -> Option<ForeignKind> {
         }
         Dialect::PowerShell => {
             if let Some(rest) = lower.strip_prefix('.') {
-                if rest.starts_with([' ', '\t']) && rest.contains("kclaude") {
+                if rest.starts_with([' ', '\t']) && mentions_word(rest, &lower_name) {
                     return Some(ForeignKind::Source);
                 }
             }
             if let Some(rest) = lower.strip_prefix("function") {
                 if rest.starts_with([' ', '\t']) {
-                    if let Some(after) = rest.trim_start().strip_prefix("kclaude") {
+                    if let Some(after) = rest.trim_start().strip_prefix(lower_name.as_str()) {
                         if is_name_end(after) {
                             return Some(ForeignKind::Function);
                         }
@@ -570,7 +618,7 @@ fn classify_segment(seg: &str, dialect: Dialect) -> Option<ForeignKind> {
                 if let Some(rest) = lower.strip_prefix(kw) {
                     if rest.starts_with([' ', '\t']) {
                         let mut words = rest.split_whitespace().filter(|w| *w != "-name");
-                        if words.next() == Some("kclaude") {
+                        if words.next() == Some(lower_name.as_str()) {
                             return Some(ForeignKind::Alias);
                         }
                     }

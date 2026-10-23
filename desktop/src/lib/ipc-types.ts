@@ -45,6 +45,7 @@ export const MODEL_TIERS: readonly ModelTier[] = ['opus', 'sonnet', 'haiku']
 
 export interface AppConfig {
   port: number
+  commandName: string
   models: Record<ModelTier, string>
   autostart: boolean
   gatewayWanted: boolean
@@ -53,6 +54,7 @@ export interface AppConfig {
 
 export interface ConfigPatch {
   port?: number
+  commandName?: string
   models?: Partial<Record<ModelTier, string>>
   autostart?: boolean
 }
@@ -132,6 +134,7 @@ export interface KclaudeVerify {
 }
 
 export interface KclaudeStatus {
+  commandName: string
   state: KclaudeState
   shell: ShellKind
   rcFiles: string[]

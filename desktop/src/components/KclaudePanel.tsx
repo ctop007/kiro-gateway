@@ -1,16 +1,17 @@
 import type { AppState } from '@/state/useAppState'
 import { MODEL_TIERS } from '@/lib/ipc-types'
 import { displayModel, kclaudeView } from '@/features/kclaude/view'
+import { panelTitle } from '@/features/command-name/view'
 
 export function KclaudePanel({ app }: { app: AppState }) {
-  const view = kclaudeView(app.kclaude, app.gatewayRunning)
+  const view = kclaudeView(app.kclaude, app.gatewayRunning, app.commandName)
   const models = app.config?.models
 
   const run = (id: 'install' | 'adopt') => void (id === 'install' ? app.installKclaude() : app.adoptKclaude())
 
   return (
     <div className="panel">
-      <h2>kclaude 命令</h2>
+      <h2>{panelTitle(app.commandName)}</h2>
       <p className={`kc-state${view.tone ? ` ${view.tone}` : ''}`}>{view.text}</p>
       {view.actions.length > 0 && (
         <div className="kc-actions" style={{ marginBottom: 10 }}>
@@ -28,7 +29,7 @@ export function KclaudePanel({ app }: { app: AppState }) {
         </div>
       )}
       <div className="cmd">
-        <code>kclaude</code>
+        <code>{app.commandName}</code>
         <span className="hint">{view.hint}</span>
       </div>
       {models && (

@@ -28,7 +28,7 @@ describe('kclaudeView: states', () => {
     const v = kclaudeView(kc({ state: 'foreign', rcFiles: ['~/.zshrc'] }), true)
     expect(v).toMatchObject({
       tone: 'warn',
-      text: '~/.zshrc 里已经有一个你自己加的 kclaude，App 没有改动它。',
+      text: '~/.zshrc 里已经有一个你自己加的 cclaude，App 没有改动它。',
       hint: '当前用的是你自己的版本',
       canRemove: false
     })
@@ -37,7 +37,7 @@ describe('kclaudeView: states', () => {
 
   it('foreign wins over Claude Code missing', () => {
     const v = kclaudeView(kc({ state: 'foreign', claudeInstalled: false }), true)
-    expect(v.text).toContain('你自己加的 kclaude')
+    expect(v.text).toContain('你自己加的 cclaude')
   })
 
   it('foreign with two PowerShell profiles lists both', () => {
@@ -51,21 +51,21 @@ describe('kclaudeView: states', () => {
 
   it('not installed: offers install, nothing to remove', () => {
     const v = kclaudeView(kc({ state: 'not_installed', verify: { status: 'skipped', detail: '', fix: null } }), true)
-    expect(v.text).toBe('还没有安装 kclaude。')
+    expect(v.text).toBe('还没有安装 cclaude。')
     expect(v.actions).toEqual([{ id: 'install', label: '安装', primary: true }])
     expect(v.canRemove).toBe(false)
   })
 
   it('outdated: says it is being refreshed and can be reinstalled', () => {
     const v = kclaudeView(kc({ state: 'outdated' }), true)
-    expect(v.text).toBe('kclaude 的内容不是最新的，重新安装一次就好。')
+    expect(v.text).toBe('cclaude 的内容不是最新的，重新安装一次就好。')
     expect(v.actions.map((a) => a.id)).toEqual(['install'])
     expect(v.canRemove).toBe(true)
   })
 
   it('before the first status: neutral line, no actions', () => {
     const v = kclaudeView(null, false)
-    expect(v.text).toBe('正在检查 kclaude')
+    expect(v.text).toBe('正在检查 cclaude')
     expect(v.actions).toEqual([])
     expect(v.canRemove).toBe(false)
   })
@@ -79,13 +79,13 @@ describe('kclaudeView: verify result', () => {
 
   it('shows the failure detail and a copyable fix', () => {
     const fix = { kind: 'copy_command' as const, label: '复制', command: 'C:\\x\\fix.cmd' }
-    const v = kclaudeView(kc({ verify: { status: 'fail', detail: '新开的终端里找不到 kclaude', fix } }), true)
-    expect(v.verifyLine).toEqual({ text: '新开的终端里找不到 kclaude', fix })
+    const v = kclaudeView(kc({ verify: { status: 'fail', detail: '新开的终端里找不到 cclaude', fix } }), true)
+    expect(v.verifyLine).toEqual({ text: '新开的终端里找不到 cclaude', fix })
   })
 
   it('substitutes a sentence when the failure detail is empty', () => {
     const v = kclaudeView(kc({ verify: { status: 'fail', detail: '  ', fix: null } }), true)
-    expect(v.verifyLine!.text).toBe('新开的终端里没能找到 kclaude')
+    expect(v.verifyLine!.text).toBe('新开的终端里没能找到 cclaude')
   })
 })
 
@@ -139,6 +139,43 @@ describe('modelPicker', () => {
 
   it('gateway running but the list is empty: disabled', () => {
     expect(modelPicker('a', [], true).disabled).toBe(true)
+  })
+})
+
+describe('kclaudeView: follows the current command name', () => {
+  const NAME = 'kclaude-test'
+  const status = (over = {}) => kc({ commandName: NAME, ...over })
+
+  it('every sentence uses the given name and none keeps the default', () => {
+    const texts = [
+      kclaudeView(status(), true),
+      kclaudeView(status(), false),
+      kclaudeView(status({ claudeInstalled: false }), true),
+      kclaudeView(status({ state: 'foreign', rcFiles: ['~/.zshrc'] }), true),
+      kclaudeView(status({ state: 'not_installed' }), true),
+      kclaudeView(status({ state: 'outdated' }), true),
+      kclaudeView(null, false, NAME),
+      kclaudeView(status({ verify: { status: 'fail', detail: '', fix: null } }), true)
+    ].map((v) => `${v.text}|${v.hint}|${v.verifyLine?.text ?? ''}`)
+    for (const t of texts) expect(t).not.toContain('cclaude')
+    expect(texts[3]).toContain('你自己加的 kclaude-test')
+    expect(texts[4]).toBe('还没有安装 kclaude-test。|用法和 claude 一样|')
+    expect(texts[5]).toContain('kclaude-test 的内容不是最新的')
+    expect(texts[6]).toContain('正在检查 kclaude-test')
+    expect(texts[7]).toContain('新开的终端里没能找到 kclaude-test')
+  })
+
+  it('the explicit name wins over a stale status', () => {
+    expect(kclaudeView(kc({ commandName: 'old-name', state: 'not_installed' }), true, 'new-name').text).toBe(
+      '还没有安装 new-name。'
+    )
+  })
+
+  it('without a name it falls back to the status, then to the default', () => {
+    expect(kclaudeView(kc({ commandName: 'from-status', state: 'not_installed' }), true).text).toBe(
+      '还没有安装 from-status。'
+    )
+    expect(kclaudeView(null, false).text).toBe('正在检查 cclaude')
   })
 })
 

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { gw } from '@/test-support/fixtures'
-import { AUTOSTART_DESCRIPTION, autostartLabel, parsePort, portHint, restartNotice } from './view'
+import { DEFAULT_PORT, AUTOSTART_DESCRIPTION, autostartLabel, parsePort, portHint, restartNotice } from './view'
 
 describe('parsePort', () => {
   it.each([
-    ['8000', 8000],
+    ['6868', 6868],
     [' 8100 ', 8100],
     ['1024', 1024],
     ['65535', 65535]
@@ -29,11 +29,24 @@ describe('parsePort', () => {
   })
 })
 
+describe('DEFAULT_PORT', () => {
+  it('is 6868 and passes its own validation', () => {
+    expect(DEFAULT_PORT).toBe(6868)
+    expect(parsePort(String(DEFAULT_PORT))).toEqual({ ok: true, port: 6868 })
+  })
+})
+
 describe('portHint', () => {
   it('says restart is needed only when the gateway is running or starting', () => {
-    expect(portHint(gw({ state: 'running' }))).toBe('改完后重启网关生效，kclaude 会自动跟上')
-    expect(portHint(gw({ state: 'stopped' }))).toBe('改完后下次打开开关时生效，kclaude 会自动跟上')
-    expect(portHint(null)).toBe('改完后下次打开开关时生效，kclaude 会自动跟上')
+    expect(portHint(gw({ state: 'running' }))).toBe('改完后重启网关生效，cclaude 会自动跟上')
+    expect(portHint(gw({ state: 'stopped' }))).toBe('改完后下次打开开关时生效，cclaude 会自动跟上')
+    expect(portHint(null)).toBe('改完后下次打开开关时生效，cclaude 会自动跟上')
+  })
+
+  it('follows the current command name', () => {
+    expect(portHint(gw({ state: 'running' }), 'kclaude-test')).toBe('改完后重启网关生效，kclaude-test 会自动跟上')
+    expect(portHint(gw({ state: 'starting' }), 'kclaude-test')).toBe('改完后重启网关生效，kclaude-test 会自动跟上')
+    expect(portHint(null, 'kclaude-test')).toBe('改完后下次打开开关时生效，kclaude-test 会自动跟上')
   })
 })
 

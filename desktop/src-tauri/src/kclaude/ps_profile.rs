@@ -1,7 +1,7 @@
 //! PowerShell profile paths and execution-policy detection.
 //!
 //! Windows PowerShell 5 and PowerShell 7 each read their own `CurrentUserAllHosts`
-//! profile, so kclaude is written to both. Paths are computed from the Documents folder
+//! profile, so the command is written to both. Paths are computed from the Documents folder
 //! (which OneDrive may redirect, hence the KnownFolder lookup) without starting any
 //! PowerShell process. The execution policy is only detected: when it would stop the
 //! profile from loading, the UI gets a command to copy; the App never changes it.
@@ -135,7 +135,7 @@ pub fn execution_policy_hint(sources: &PolicySources) -> Option<PolicyHint> {
     }
     Some(PolicyHint {
         status: VerifyStatus::Fail,
-        detail: "PowerShell 执行策略不允许加载 profile，kclaude 在新终端里不会生效。复制下面的命令到 PowerShell 里运行"
+        detail: "PowerShell 执行策略不允许加载 profile，新终端里用不了这个命令。复制下面的命令到 PowerShell 里运行"
             .to_string(),
         fix: Some(FixAction::CopyCommand {
             label: "复制".to_string(),

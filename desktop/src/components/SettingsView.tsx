@@ -3,17 +3,38 @@ import type { AppState } from '@/state/useAppState'
 import { MODEL_TIERS, type ModelTier } from '@/lib/ipc-types'
 import { modelPicker, rcDescription } from '@/features/kclaude/view'
 import { AUTOSTART_DESCRIPTION, autostartLabel, parsePort, portHint, restartNotice } from '@/features/settings/view'
+import {
+  COMMAND_NAME_DESCRIPTION,
+  canSaveCommandName,
+  parseCommandName,
+  removeButtonLabel
+} from '@/features/command-name/view'
 import { settingsVersion } from '@/features/update/view'
 import { openExternalUrl } from '@/lib/tauri-opener'
 
 export function SettingsView({ app }: { app: AppState }) {
   const config = app.config
-  const [portText, setPortText] = useState('')
+  const [portText, setPortText] = useState(() => (config ? String(config.port) : ''))
   const [portError, setPortError] = useState<string | null>(null)
 
   useEffect(() => {
     if (config) setPortText(String(config.port))
   }, [config?.port]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const currentName = app.commandName
+  const [nameText, setNameText] = useState(() => config?.commandName ?? '')
+  useEffect(() => {
+    if (config) setNameText(config.commandName)
+  }, [config?.commandName]) // eslint-disable-line react-hooks/exhaustive-deps
+  const nameParse = parseCommandName(nameText)
+  // Instant feedback only after the user typed something that differs from the saved name.
+  const nameError = config && nameText !== currentName && !nameParse.ok ? nameParse.message : null
+  const nameSavable = canSaveCommandName(nameText, currentName, app.commandNameAction.pending)
+
+  const submitName = (e: FormEvent) => {
+    e.preventDefault()
+    if (nameSavable && nameParse.ok) void app.saveCommandName(nameParse.name)
+  }
 
   const submitPort = (e: FormEvent) => {
     e.preventDefault()
@@ -37,7 +58,7 @@ export function SettingsView({ app }: { app: AppState }) {
           <label className="name" htmlFor="port-input">
             端口
           </label>
-          <div className="desc">{portHint(app.gateway)}</div>
+          <div className="desc">{portHint(app.gateway, currentName)}</div>
         </div>
         <form onSubmit={submitPort}>
           <div className="inline">
@@ -118,7 +139,45 @@ export function SettingsView({ app }: { app: AppState }) {
 
       <div className="setting">
         <div>
-          <div className="name">kclaude</div>
+          <label className="name" htmlFor="command-name-input">
+            命令名
+          </label>
+          <div className="desc">{COMMAND_NAME_DESCRIPTION}</div>
+        </div>
+        <form onSubmit={submitName}>
+          <div className="inline">
+            <input
+              id="command-name-input"
+              type="text"
+              value={nameText}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={64}
+              aria-invalid={nameError !== null}
+              aria-describedby="command-name-msg"
+              onChange={(e) => {
+                setNameText(e.target.value)
+                app.clearCommandNameResult()
+              }}
+              disabled={!config}
+            />
+            <button type="submit" className="btn" disabled={!config || !nameSavable}>
+              保存
+            </button>
+          </div>
+          <div id="command-name-msg" aria-live="polite">
+            {nameError && <div className="err">{nameError}</div>}
+            {!nameError && app.commandNameResult && (
+              <div className={app.commandNameResult.tone === 'ok' ? 'ok-note' : 'err'}>{app.commandNameResult.text}</div>
+            )}
+          </div>
+        </form>
+      </div>
+
+      <div className="setting">
+        <div>
+          <div className="name">{currentName}</div>
           <div className="desc">{rcDescription(app.kclaude)}</div>
         </div>
         <div className="inline">
@@ -128,7 +187,7 @@ export function SettingsView({ app }: { app: AppState }) {
             disabled={!kcRemovable || app.kclaudeAction.pending}
             onClick={() => void app.removeKclaude()}
           >
-            移除 kclaude
+            {removeButtonLabel(currentName)}
           </button>
           {app.kclaudeAction.error && <span className="action-error" role="alert">{app.kclaudeAction.error}</span>}
         </div>

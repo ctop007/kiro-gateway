@@ -50,11 +50,12 @@ export function failure(over: Partial<GatewayFailure> = {}): GatewayFailure {
 }
 
 export function gw(over: Partial<GatewayStatus> = {}): GatewayStatus {
-  return { state: 'stopped', port: 8000, pid: null, since: null, failure: null, ...over }
+  return { state: 'stopped', port: 6868, pid: null, since: null, failure: null, ...over }
 }
 
 export function kc(over: Partial<KclaudeStatus> = {}): KclaudeStatus {
   return {
+    commandName: 'cclaude',
     state: 'installed',
     shell: 'zsh',
     rcFiles: ['~/.zshrc'],

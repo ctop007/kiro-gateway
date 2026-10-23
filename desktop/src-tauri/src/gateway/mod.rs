@@ -21,7 +21,7 @@
 //! Everything except `commands` is plain Rust with no Tauri dependency. Directories,
 //! clock, health probe, process inspector and the status callback are injected, so the
 //! tests drive the real code with fake sidecars (shell scripts) in temporary
-//! directories and never touch the real App data directory or port 8000.
+//! directories and never touch the real App data directory or the default port 6868.
 
 pub mod classify;
 pub mod env;

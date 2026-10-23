@@ -213,27 +213,30 @@ xattr -dr com.apple.quarantine "/Applications/Kiro Gateway.app"
 |---|---|---|
 | 网关 | 仓库里 `python main.py`，配置在 `~/kiro-gateway/.env` | 内置 sidecar，配置在 App 数据目录，不读 `.env` |
 | 访问密钥 | `.env` 里的 `PROXY_API_KEY` | App 首次启动随机生成，存在数据目录的 `secret`（权限 0600），不需要手填 |
-| 默认端口 | 8000 | 8000，可在设置里改 |
-| kclaude | `source scripts/kclaude.zsh`，网关没起会自动后台启动 | 标记段 `source` 数据目录下的 `kclaude.zsh`，网关没起只提示，不替你启动 |
+| 默认端口 | 8000 | 6868，可在设置里改（1024–65535） |
+| 命令名 | `kclaude` | 默认 `cclaude`，可在设置里改名，所以和手动的 `kclaude` 可以同时存在 |
+| 命令 | `source scripts/kclaude.zsh`，网关没起会自动后台启动 | 标记段 `source` 数据目录下的 `<命令名>.zsh`，网关没起只提示，不替你启动 |
 
-App 数据目录：`~/Library/Application Support/dev.kirogateway.desktop/`。里面有 `config.json`、`secret`、`kclaude.env`、`kclaude.zsh`、`logs/gateway.log`、`logs/requests/`（请求日志）、`runtime/`、`gateway.pid`。
+App 数据目录：`~/Library/Application Support/dev.kirogateway.desktop/`。里面有 `config.json`、`secret`、`kclaude.env`（文件名固定，内部文件）、`<命令名>.zsh`（默认 `cclaude.zsh`）、`logs/gateway.log`、`logs/requests/`（请求日志）、`runtime/`、`gateway.pid`。
 
-**两套不要同时占同一个端口。** 本机已经按手动方式在 8000 上跑着网关时，App 打开开关会提示 8000 被占用并给出占用者的进程名和 pid，不会去结束它。处理办法：先关掉手动网关，或者在 App 设置里换一个端口（改端口后需要重启网关才生效）。
+**默认端口改成了 6868，不再和手动网关的 8000 冲突。** 以前用过 App 的人，`config.json` 里已经保存的端口（比如 8000）保持不变，只有新装的才默认 6868。如果还是遇到「端口已被占用」，App 会给出占用者的进程名和 pid，不会去结束它。处理办法：先关掉对方，或者在 App 设置里换一个端口（改端口后需要重启网关才生效）。
 
-### kclaude 的启动文件管理
+### 命令的启动文件管理
 
 App 启动时会在 `~/.zshrc`（bash 用户是 `~/.bashrc` / `~/.bash_profile`）里追加一个带标记的段，只有这一段归 App 管：
 
 ```
-# >>> kiro-gateway-desktop kclaude >>>
-[ -r '…/kclaude.zsh' ] && source '…/kclaude.zsh'
-# <<< kiro-gateway-desktop kclaude <<<
+# >>> kiro-gateway-desktop command >>>
+[ -r '…/cclaude.zsh' ] && source '…/cclaude.zsh'
+# <<< kiro-gateway-desktop command <<<
 ```
 
 - 写之前先备份成 `<原文件名>.bak-kiro-gateway-YYYYMMDD-HHMMSS`，备份失败就不写；标记段之外的内容逐字节不动。
-- **你现在的 `~/.zshrc` 里已经有 `source "$HOME/kiro-gateway/scripts/kclaude.zsh"`**，App 会把它识别为「已有 kclaude」（`foreign`），不会写入。要换成 App 管理，点界面上的「改由 App 管理」：旧的那一行会被注释成 `# disabled by Kiro Gateway App: …`，再加上标记段。想回到手动方式：点「移除」，再把注释掉的那一行恢复。
-- 已经打开的终端不会自动生效，新开一个终端。`kclaude.zsh` 每次运行都会读 `kclaude.env`，所以在 App 里改端口、模型映射后，已打开的终端里的 `kclaude` 下一次运行就生效。
-- 移除后，App 下次启动不会再自动装回（数据目录里有 `kclaude.removed` 标记；重新点「安装」会清除它）。
+- **改命令名**：设置里把 `cclaude` 改成别的名字（例如测试时用 `kclaude-test`）。名字只能用字母、数字、`-`、`_`，以字母开头，2 到 32 个字符；不能是 `claude` 或常见系统命令（`ls`、`git`、`node` 等）；PATH 里已有同名可执行文件、或启动文件里已有同名函数 / alias / `source` 时提示「这个名字已经被占用」。改完后启动文件里仍然只有一段，指向新名字的脚本，旧名字的脚本文件删除，新开的终端里旧名字不再存在。
+- 旧版本（命令固定叫 `kclaude`）写的标记段是 `# >>> kiro-gateway-desktop kclaude >>>`，App 认得它：启动时就地换成新标记段，并删掉旧的 `kclaude.zsh`。
+- **你现在的 `~/.zshrc` 里有 `source "$HOME/kiro-gateway/scripts/kclaude.zsh"`**（手动方式）。默认命令名是 `cclaude`，所以它不再算「已有同名命令」：App 照常装上 `cclaude`，你那一行原样不动，两个命令可以同时用。只有把 App 的命令名也改成 `kclaude` 时才会提示被占用。
+- 已经打开的终端不会自动生效，新开一个终端。命令脚本每次运行都会读 `kclaude.env`，所以在 App 里改端口、模型映射后，已打开的终端里的命令下一次运行就生效；改命令名则需要新开终端。
+- 移除后，App 下次启动不会再自动装回（数据目录里有 `kclaude.removed` 标记；重新点「安装」会清除它）。移除状态下改命令名只保存名字，不写启动文件。
 - App 不碰 `claude` 命令本身、`~/.claude/` 和全局 `ANTHROPIC_*` 环境变量。
 
 ### 升级

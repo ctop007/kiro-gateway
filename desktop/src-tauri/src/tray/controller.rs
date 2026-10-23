@@ -17,7 +17,12 @@ use crate::update::{UpdateService, UpdateStatus};
 /// Id of the single tray icon.
 const TRAY_ID: &str = "main";
 
-/// The icon shown in the menu bar / notification area (placeholder art from `icons/`).
+/// Menu bar icon (macOS): black + alpha template drawn from the app icon's K-beam shape;
+/// the system tints it for light and dark menu bars. 44 px = 22 pt at 2x.
+#[cfg(target_os = "macos")]
+const ICON_PNG: &[u8] = include_bytes!("../../icons/tray-template@2x.png");
+/// Notification area icon (Windows): the full-colour app icon reads better there.
+#[cfg(not(target_os = "macos"))]
 const ICON_PNG: &[u8] = include_bytes!("../../icons/32x32.png");
 
 /// Owns the tray icon and the inputs its menu is built from.
@@ -74,6 +79,7 @@ impl TrayController {
         let menu = render(app, &model)?;
         let tray = TrayIconBuilder::with_id(TRAY_ID)
             .icon(Image::from_bytes(ICON_PNG)?)
+            .icon_as_template(cfg!(target_os = "macos"))
             .tooltip(&model.tooltip)
             .title(&model.title)
             .menu(&menu)
