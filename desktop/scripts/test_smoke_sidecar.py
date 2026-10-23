@@ -714,3 +714,20 @@ class TestFrozenUtf8Mode(unittest.TestCase):
     def test_powershell_script_passes_utf8_mode(self):
         text = (self.SCRIPTS / "build-sidecar.ps1").read_text(encoding="utf-8-sig")
         self.assertIn("--python-option 'X utf8'", text)
+
+
+class TestPowerShellHelpersUtf8(unittest.TestCase):
+    """
+    Every Python helper the PowerShell script runs prints Chinese text.
+
+    `-I` ignores PYTHONUTF8, and a Windows console defaults to cp1252, so each
+    `-I` invocation must also pass `-X utf8` or the helper dies printing its
+    own status line (seen on the windows-latest runner).
+    """
+
+    def test_every_isolated_helper_call_is_utf8(self):
+        text = (SCRIPTS_DIR / "build-sidecar.ps1").read_text(encoding="utf-8-sig")
+        calls = [line for line in text.splitlines() if " -I " in line and "&" in line]
+        self.assertGreaterEqual(len(calls), 5, calls)
+        for line in calls:
+            self.assertIn("-X utf8 -I", line, line)

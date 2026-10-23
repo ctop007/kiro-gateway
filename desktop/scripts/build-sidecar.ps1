@@ -27,6 +27,8 @@ param(
 # Native tools write progress to stderr; with 'Stop' Windows PowerShell 5.1 would
 # turn that into a terminating error. Exit codes are checked explicitly instead.
 $ErrorActionPreference = 'Continue'
+# Helpers print Chinese status lines in UTF-8; show them correctly on cp1252 / gbk consoles.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Set-StrictMode -Version 2.0
 
 $ScriptDir      = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -87,10 +89,10 @@ $WorkDir = Join-Path ([IO.Path]::GetTempPath()) ("kgw-sidecar-build-" + [Guid]::
 New-Item -ItemType Directory -Path $WorkDir | Out-Null
 
 try {
-    $PyiVersion = (& $BootExe @BootPrefix -I $Helpers pyinstaller-version | Select-Object -First 1)
+    $PyiVersion = (& $BootExe @BootPrefix -X utf8 -I $Helpers pyinstaller-version | Select-Object -First 1)
     if ($LASTEXITCODE -ne 0 -or -not $PyiVersion) { Stop-Build "错误：读取 PyInstaller 版本失败" }
 
-    $Requirements = @(& $BootExe @BootPrefix -I $Helpers requirements (Join-Path $RepoRoot 'requirements.txt'))
+    $Requirements = @(& $BootExe @BootPrefix -X utf8 -I $Helpers requirements (Join-Path $RepoRoot 'requirements.txt'))
     if ($LASTEXITCODE -ne 0 -or $Requirements.Count -eq 0) { Stop-Build "错误：读取生产依赖失败" }
 
     Write-Step "安装生产依赖和 pyinstaller==$PyiVersion"
@@ -101,13 +103,13 @@ try {
     $StageDir = Join-Path $WorkDir 'stage'
     New-Item -ItemType Directory -Path $StageDir | Out-Null
     Write-Step "下载 tiktoken cl100k_base（缓存文件名 = sha1(url)）"
-    & $VenvPy -I $Helpers download-tiktoken (Join-Path $StageDir 'tiktoken_cache')
+    & $VenvPy -X utf8 -I $Helpers download-tiktoken (Join-Path $StageDir 'tiktoken_cache')
     if ($LASTEXITCODE -ne 0) { Stop-Build "错误：tiktoken 缓存准备失败" }
 
     # --- 4. PyInstaller -------------------------------------------------------
     $OmitArgs = @()
     if ($NegativeCheck) { $OmitArgs = @('--omit', $NegativeCheck) }
-    $PyiArgs = @(& $VenvPy -I $Helpers pyinstaller-args (Join-Path $SidecarScripts 'hidden-imports.txt') @OmitArgs)
+    $PyiArgs = @(& $VenvPy -X utf8 -I $Helpers pyinstaller-args (Join-Path $SidecarScripts 'hidden-imports.txt') @OmitArgs)
     if ($LASTEXITCODE -ne 0) { Stop-Build "错误：生成 PyInstaller 参数失败" }
 
     $suffix = if ($NegativeCheck) { "(去掉 $NegativeCheck) " } else { "" }
@@ -142,7 +144,7 @@ try {
 
     # --- 5. smoke -------------------------------------------------------------
     Write-Step "冒烟测试（临时 HOME、81xx 端口、假 kiro-cli 数据库、不联网）"
-    & $VenvPy -I (Join-Path $SidecarScripts 'smoke_sidecar.py') $StageExe (Join-Path $StageDir 'tiktoken_cache') --timeout $SmokeTimeout
+    & $VenvPy -X utf8 -I (Join-Path $SidecarScripts 'smoke_sidecar.py') $StageExe (Join-Path $StageDir 'tiktoken_cache') --timeout $SmokeTimeout
     $SmokeStatus = $LASTEXITCODE
 
     if ($NegativeCheck) {
