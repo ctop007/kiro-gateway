@@ -478,6 +478,9 @@ fn a_bundle_shaped_record_whose_live_process_is_something_else_is_left_alone() {
 fn the_windows_spelling_of_a_bundled_sidecar_is_recognised() {
     assert!(is_bundled_sidecar_path(Path::new("C:/Program Files/Kiro Gateway/resources/gateway/kiro-gateway.exe")));
     assert!(is_bundled_sidecar_path(Path::new(OLD_SIDECAR)));
+    assert!(is_bundled_sidecar_path(Path::new("/Applications/Kiro Gateway.app/Contents/Resources/gateway-aarch64/kiro-gateway")));
+    assert!(is_bundled_sidecar_path(Path::new("/Applications/Kiro Gateway.app/Contents/Resources/gateway-x86_64/kiro-gateway")));
+    assert!(!is_bundled_sidecar_path(Path::new("/x/resources/gateway-sparc/kiro-gateway-extra/kiro-gateway")));
     assert!(!is_bundled_sidecar_path(Path::new("kiro-gateway")));
     assert!(!is_bundled_sidecar_path(Path::new("/")));
     assert!(!is_bundled_sidecar_path(Path::new("gateway/kiro-gateway")));

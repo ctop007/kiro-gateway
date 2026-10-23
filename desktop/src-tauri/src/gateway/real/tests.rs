@@ -28,7 +28,7 @@ fn built_sidecar() -> Option<Sidecar> {
     } else {
         PathBuf::from("/Users/me/kiro-gateway/desktop/src-tauri/resources")
     };
-    sidecar::resolve(&resources, None).ok()
+    sidecar::resolve(&resources, None, std::env::consts::ARCH).ok()
 }
 
 fn skip(test: &str) {

@@ -18,6 +18,10 @@
 # Upload order: installers -> update packages -> .sig -> HEAD check of every
 # file -> latest.json last, so the manifest never points at missing files.
 #
+# The universal build needs both sidecars first:
+#   scripts/build-sidecar.sh --arch arm64 && scripts/build-sidecar.sh --arch x86_64
+# (checked up front; see `make dmg-universal`).
+#
 # Signing key: ~/.kiro-gateway/desktop-updater.key (no password), or
 # TAURI_SIGNING_PRIVATE_KEY_PATH. COS credentials: COS_SECRET_ID / COS_SECRET_KEY
 # or ~/.tccli/default.credential; they are never printed.
@@ -44,7 +48,7 @@ for arg in "$@"; do
     FIRST_RELEASE=*) FIRST_RELEASE="${arg#FIRST_RELEASE=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "未知参数：$arg（见 --help）" >&2; exit 2 ;;
   esac
 done
@@ -74,6 +78,12 @@ if [ "$DRY_RUN" = "0" ]; then
   [ "$FORCE" = "1" ] && CHECK+=(--force)
   [ "$FIRST_RELEASE" = "1" ] && CHECK+=(--first-release)
   py "${CHECK[@]}"
+fi
+
+# A universal build ships one sidecar per architecture; refuse to start (nothing written yet)
+# when one is missing or built for the wrong CPU.
+if [ "$DRY_RUN" = "0" ] && [ "$SKIP_BUILD" = "0" ]; then
+  py check-sidecars --resources "$DESKTOP/src-tauri/resources"
 fi
 
 [ -n "$STAGING" ] || STAGING="$(mktemp -d "${TMPDIR:-/tmp}/kiro-gateway-release.XXXXXX")"

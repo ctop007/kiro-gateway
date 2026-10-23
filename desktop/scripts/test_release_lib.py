@@ -320,6 +320,70 @@ class SigningEnvironmentTests(unittest.TestCase):
         self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY_PATH", text)
 
 
+def write_sidecar(resources: Path, arch: str, cpu=None) -> Path:
+    """A fake `kiro-gateway` with a thin 64-bit Mach-O header for `arch` (or an explicit cpu type)."""
+    exe = resources / f"gateway-{arch}" / "kiro-gateway"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    cpu = rl._MACHO_CPU[arch] if cpu is None else cpu
+    exe.write_bytes(rl._MACHO_MAGIC_64.to_bytes(4, "little") + cpu.to_bytes(4, "little") + b"\0" * 16)
+    return exe
+
+
+class CheckSidecarsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.res = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_both_architectures_in_place_is_clean(self):
+        write_sidecar(self.res, "aarch64")
+        write_sidecar(self.res, "x86_64")
+        self.assertEqual(rl.check_sidecars(self.res), [])
+
+    def test_missing_architecture_names_the_build_command(self):
+        write_sidecar(self.res, "aarch64")
+        (self.res / "gateway-x86_64").mkdir()
+        (self.res / "gateway-x86_64/.gitkeep").touch()
+        problems = rl.check_sidecars(self.res)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("x86_64", problems[0])
+        self.assertIn("build-sidecar.sh --arch x86_64", problems[0])
+
+    def test_nothing_built_reports_both(self):
+        self.assertEqual(len(rl.check_sidecars(self.res)), 2)
+
+    def test_arm64_binary_in_the_x86_64_directory_is_rejected(self):
+        write_sidecar(self.res, "aarch64")
+        write_sidecar(self.res, "x86_64", cpu=rl._MACHO_CPU["aarch64"])
+        problems = rl.check_sidecars(self.res)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("gateway-x86_64", problems[0])
+
+    def test_non_macho_file_is_rejected(self):
+        write_sidecar(self.res, "aarch64")
+        exe = write_sidecar(self.res, "x86_64")
+        exe.write_text("#!/bin/sh\n")
+        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
+
+    def test_truncated_file_is_rejected_not_crashed_on(self):
+        write_sidecar(self.res, "aarch64")
+        write_sidecar(self.res, "x86_64").write_bytes(b"\xcf\xfa")
+        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
+
+    def test_fat_binary_is_rejected(self):
+        write_sidecar(self.res, "aarch64")
+        write_sidecar(self.res, "x86_64").write_bytes(b"\xca\xfe\xba\xbe" + b"\0" * 20)
+        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
+
+    def test_legacy_single_gateway_dir_does_not_count(self):
+        legacy = self.res / "gateway" / "kiro-gateway"
+        legacy.parent.mkdir()
+        legacy.write_bytes(b"\xcf\xfa\xed\xfe" + (0x0100000C).to_bytes(4, "little"))
+        self.assertEqual(len(rl.check_sidecars(self.res)), 2)
+
+
 class DryRunScriptTests(unittest.TestCase):
     """release.sh --dry-run end to end: fake build, real manifest, no upload."""
 
@@ -438,6 +502,9 @@ class RealReleaseScriptTests(unittest.TestCase):
         self.home = base / "home"
         self.home.mkdir()
         self.originals = {rel: (self.desktop / rel).read_bytes() for rel in rl.VERSION_FILES}
+        self.resources = self.desktop / "src-tauri/resources"
+        write_sidecar(self.resources, "aarch64")
+        write_sidecar(self.resources, "x86_64")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -493,6 +560,36 @@ class RealReleaseScriptTests(unittest.TestCase):
         self.assertNotIn("无法读取线上 latest.json", r.stderr)
         self.assertIn("build reached", r.stderr)
         self.assert_versions_untouched()
+
+    def test_missing_sidecar_aborts_before_versions_or_build_are_touched(self):
+        self.fake_pnpm("echo must not build >&2; exit 1")
+        (self.resources / "gateway-x86_64/kiro-gateway").unlink()
+        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("缺少 x86_64 的 sidecar", r.stderr)
+        self.assertIn("build-sidecar.sh --arch x86_64", r.stderr)
+        self.assertNotIn("must not build", r.stderr)
+        self.assertNotIn("恢复版本号文件", r.stderr, "nothing was bumped, so nothing to roll back")
+        self.assert_versions_untouched()
+
+    def test_wrong_architecture_sidecar_aborts_too(self):
+        self.fake_pnpm("echo must not build >&2; exit 1")
+        write_sidecar(self.resources, "aarch64", cpu=rl._MACHO_CPU["x86_64"])
+        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("不是 aarch64 的 Mach-O", r.stderr)
+        self.assert_versions_untouched()
+
+    def test_skip_build_does_not_need_sidecars(self):
+        (self.resources / "gateway-x86_64/kiro-gateway").unlink()
+        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1", "--skip-build")
+        self.assertNotIn("缺少 x86_64 的 sidecar", r.stderr)
+        self.assert_versions_untouched()
+
+    def test_build_command_is_the_universal_one(self):
+        self.fake_pnpm('echo "PNPM_ARGS=$*" >&2; exit 1')
+        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
+        self.assertIn("tauri build --target universal-apple-darwin --bundles app,dmg", r.stderr)
 
     def test_bad_first_release_value_is_rejected(self):
         r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=2")

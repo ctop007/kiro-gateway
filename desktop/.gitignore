@@ -4,5 +4,10 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/resources/gateway/*
 !src-tauri/resources/gateway/.gitkeep
+src-tauri/resources/gateway-aarch64/*
+!src-tauri/resources/gateway-aarch64/.gitkeep
+src-tauri/resources/gateway-x86_64/*
+!src-tauri/resources/gateway-x86_64/.gitkeep
 .build-venv/
+.build-venv-*/
 *.key

@@ -64,8 +64,16 @@
 - `make dev`：开发窗口（HMR）。
 - `make test`：`pnpm test` + `cargo test`。
 - `make check`：`tsc --noEmit` + `vite build`。
-- `make sidecar`：调 `scripts/build-sidecar.sh` 打包网关到 `src-tauri/resources/gateway/`（目录 gitignore，只保留 `.gitkeep`）。
-- `make dmg-local`：本机出未签名 dmg。会拉起 Finder 给 dmg 窗口排版；无人值守（CI、远程会话）时用 `CI=true pnpm tauri build --bundles app,dmg`，跳过排版。
+- `make sidecar`：调 `scripts/build-sidecar.sh` 打包本机架构的网关到 `src-tauri/resources/gateway-<arch>/`（`aarch64` 或 `x86_64`；目录 gitignore，只保留 `.gitkeep`）。`--arch arm64|x86_64` 指定架构；Apple Silicon 上打 x86_64 会自动用 `arch -x86_64` 重跑自己，并用 `uv python find cpython-3.13-macos-x86_64` 找解释器（先 `uv python install cpython-3.13-macos-x86_64`；也可用 `KGW_PYTHON` 指定），冒烟测试在 Rosetta 下照样跑。x86_64 的 venv 是 `.build-venv-x86_64`，arm64 的仍是 `.build-venv`。
+- `make sidecar-universal`：两个架构各打一遍。
+- `make dmg-local`：本机出未签名 dmg，**只打本机架构**的 sidecar（用 `--config` 把另一个目录从 `bundle.resources` 里去掉）。会拉起 Finder 给 dmg 窗口排版；无人值守（CI、远程会话）时用 `CI=true pnpm tauri build --bundles app,dmg`，跳过排版。
+- `make dmg-universal`：出 macOS 通用（Intel + Apple 芯片）未签名 dmg，需先 `make sidecar-universal`；等价于 `CI=true pnpm tauri build --bundles app,dmg --target universal-apple-darwin`，产物在 `src-tauri/target/universal-apple-darwin/release/bundle/`。
+
+### sidecar 目录规则（按架构）
+
+- macOS：每个架构一个目录，`Contents/Resources/gateway-aarch64/` 与 `gateway-x86_64/`。`sidecar.rs` 按 `std::env::consts::ARCH`（App 实际运行的架构，Rosetta 下是 `x86_64`）选目录；`KIRO_GATEWAY_SIDECAR` 覆盖仍然最优先。包里没有当前架构的目录时报“这个安装包里没有适用于当前 CPU 的网关程序”，目录在但没有可执行文件时仍报“重新安装”。
+- Windows：仍是单个 `gateway/`（`tauri.conf.json` 基础配置）。
+- 打进哪些目录由配置决定：`tauri.conf.json` 只列 `resources/gateway/`（Windows）；`tauri.macos.conf.json`（macOS 主机自动合并，JSON merge patch）把它置 `null`，换成两个架构目录。所以 macOS 默认是 universal 布局，两个目录都必须存在（`.gitkeep` 保证目录在，但空目录会打出起不来的包，所以 `release.sh` 和 `make dmg-universal` 先检查两个 `kiro-gateway` 可执行文件在位；`release.sh` 还校验 Mach-O 的 CPU 类型）。单架构构建用 `--config '{"bundle":{"resources":{"resources/gateway-<另一个>/":null}}}'`，`make dmg-local` 已经这样做。
 - `make clean`：清理 dist 和 dmg 残留。
 
 ## 测试要求
@@ -79,11 +87,14 @@
 ## 包体
 
 - 包含 PyInstaller onedir 的网关 sidecar，参考项目 的 20 MB 上限不适用。
-- 实测（macOS arm64，`scripts/build-sidecar.sh` + `pnpm tauri build --bundles app,dmg --target aarch64-apple-darwin`，ad-hoc 签名）：
-  - sidecar 目录 `src-tauri/resources/gateway/`：44 MB（`_internal` 35 MB、启动器 7.7 MB、`tiktoken_cache` 1.6 MB），打成 tar.gz 约 21 MB。
+- 实测 universal（`make sidecar-universal` + `CI=true pnpm tauri build --bundles app,dmg --target universal-apple-darwin`，ad-hoc 签名）：
+  - dmg：48.8 MB（`Kiro Gateway_0.0.1_universal.dmg`，51125461 字节）；`.app` 97 MB（主程序 universal，`gateway-aarch64/` 44 MB + `gateway-x86_64/` 41 MB）。
+  - 原生 arm64 与 `arch -x86_64`（Rosetta）下各自启动：/health 通，sidecar 分别是 `gateway-aarch64`（arm64）与 `gateway-x86_64`（x86_64），停止后无遗留进程。
+- 实测单架构（macOS arm64，`pnpm tauri build --bundles app,dmg --target aarch64-apple-darwin`，ad-hoc 签名）：
+  - sidecar 目录（现为 `src-tauri/resources/gateway-aarch64/`）：44 MB（`_internal` 35 MB、启动器 7.7 MB、`tiktoken_cache` 1.6 MB），打成 tar.gz 约 21 MB。
   - `Kiro Gateway.app`：49 MB（其中 sidecar 44 MB，桌面端主程序 4.9 MB）。
   - dmg：23.5 MB（`Kiro Gateway_0.0.1_aarch64.dmg`，24646084 字节）。
-  - 当前 sidecar 只有 arm64；Intel / universal 包需要 universal2 的 Python 或单独的 x86_64 构建，后续再做。
+  - 单架构包只含本机架构的 sidecar；Intel 用户请用 universal 包。
 
 ## 不要做
 
@@ -103,7 +114,7 @@ desktop/scripts/release.sh VERSION=0.0.3 NOTES=notes.md FORCE=1    # 强制升�
 desktop/scripts/release.sh VERSION=0.0.2 NOTES=notes.md --dry-run  # 只生成清单并打印上传计划，不改版本、不上传
 ```
 
-- 脚本做的事：检查 `VERSION` 是 `x.y.z` 且高于当前版本 → 改 `package.json`、`tauri.conf.json`、`Cargo.toml`（及 `Cargo.lock` 里本包条目）→ `pnpm tauri build --target universal-apple-darwin --bundles app,dmg`（带 updater artifacts，用私钥签名）→ 生成 `latest.json` → 上传。`--skip-build` 复用已有产物；`--dry-run` 没有产物时用占位文件，所以 dry-run 的清单签名是占位值，不能拿去上传。
+- 脚本做的事：检查 `VERSION` 是 `x.y.z` 且高于当前版本 → 改 `package.json`、`tauri.conf.json`、`Cargo.toml`（及 `Cargo.lock` 里本包条目）→ 先检查 `gateway-aarch64/`、`gateway-x86_64/` 两个 sidecar 都在且 CPU 架构对（缺则在改任何文件前中止，提示先 `make sidecar-universal`）→ `pnpm tauri build --target universal-apple-darwin --bundles app,dmg`（带 updater artifacts，用私钥签名）→ 生成 `latest.json` → 上传。`--skip-build` 复用已有产物；`--dry-run` 没有产物时用占位文件，所以 dry-run 的清单签名是占位值，不能拿去上传。
 - 上传顺序固定：安装包（dmg）→ 更新包 `Kiro-Gateway.app.tar.gz` → `.sig` → 对每个文件 HEAD 校验（状态 200，且大小与本地一致）→ 最后才覆盖 `latest.json`（`Cache-Control: no-cache`）。任一步失败，清单都不会被改。
 - `latest.json` 的 `minRequiredVersion`：普通发布沿用线上清单的值（线上读不到时用 `0.0.1`），所以前一次的强制升级不会被悄悄解除；`FORCE=1` 设为本次版本，并要求把版本号再输入一遍。回滚的办法是发一个版本号更高的修复版，updater 不支持降级。
 - 清单里 `manualDownload.darwin` / `.windows` 是 dmg / setup.exe 直链，强制升级下载失败时界面显示它。macOS 的 `darwin-aarch64` 与 `darwin-x86_64` 指向同一个 universal 更新包。Windows 包要在 Windows 上出，把 NSIS 的 `bundle` 目录放到 `WINDOWS_BUNDLE_DIR` 再运行，清单才会带 `windows-x86_64`。

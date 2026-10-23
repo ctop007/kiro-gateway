@@ -183,7 +183,7 @@ impl GatewayService {
             .set_gateway_wanted(true)
             .map_err(|_| ServiceError::Internal("没能保存开关状态，请检查磁盘空间和权限".to_string()))?;
 
-        let found = sidecar::resolve(&self.resource_dir, self.sidecar_override.as_deref());
+        let found = sidecar::resolve(&self.resource_dir, self.sidecar_override.as_deref(), std::env::consts::ARCH);
         let sidecar = match found {
             Ok(sidecar) => sidecar,
             Err(error) => {

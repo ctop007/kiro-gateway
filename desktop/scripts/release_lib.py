@@ -533,6 +533,48 @@ def _notes_from(arg: str) -> str:
     return text
 
 
+# Mach-O 64-bit little-endian magic and the CPU types of the two macOS sidecar architectures.
+_MACHO_MAGIC_64 = 0xFEEDFACF
+_MACHO_CPU = {"aarch64": 0x0100000C, "x86_64": 0x01000007}
+SIDECAR_ARCHS = ("aarch64", "x86_64")
+
+
+def _macho_cpu(path: Path) -> Optional[int]:
+    """CPU type of a thin 64-bit Mach-O file, or None for anything else (fat, script, ELF)."""
+    with path.open("rb") as f:
+        head = f.read(8)
+    if len(head) < 8 or int.from_bytes(head[:4], "little") != _MACHO_MAGIC_64:
+        return None
+    return int.from_bytes(head[4:8], "little")
+
+
+def check_sidecars(resources: Path) -> List[str]:
+    """Problems that would make a universal macOS bundle ship a broken sidecar.
+
+    A universal App carries ``gateway-aarch64/`` and ``gateway-x86_64/``; Tauri happily bundles
+    an empty directory (only a ``.gitkeep``), which would produce an Intel build that cannot
+    start its gateway. Each directory must hold a ``kiro-gateway`` executable of its own
+    architecture.
+
+    Args:
+        resources: ``desktop/src-tauri/resources``.
+
+    Returns:
+        Chinese problem descriptions; empty when both sidecars are in place.
+    """
+    problems: List[str] = []
+    for arch in SIDECAR_ARCHS:
+        exe = resources / f"gateway-{arch}" / "kiro-gateway"
+        build = "scripts/build-sidecar.sh --arch " + ("arm64" if arch == "aarch64" else "x86_64")
+        if not exe.is_file():
+            problems.append(f"缺少 {arch} 的 sidecar（{exe}），先运行 {build}")
+            continue
+        cpu = _macho_cpu(exe)
+        if cpu != _MACHO_CPU[arch]:
+            problems.append(f"{exe} 不是 {arch} 的 Mach-O 可执行文件，重新运行 {build}")
+    return problems
+
+
 def make_fake_artifacts(version: str, bundle: Path) -> None:
     """Placeholder outputs for --dry-run without a real build."""
     (bundle / "macos").mkdir(parents=True, exist_ok=True)
@@ -614,6 +656,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = sub.add_parser("check-published")
     p.add_argument("--force", action="store_true")
     p.add_argument("--first-release", action="store_true")
+    p = sub.add_parser("check-sidecars")
+    p.add_argument("--resources", required=True)
     p = sub.add_parser("snapshot")
     p.add_argument("--root", required=True)
     p.add_argument("--dir", required=True)
@@ -634,6 +678,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             if len(set(versions.values())) != 1:
                 raise ReleaseError(f"三处版本号不一致：{versions}")
             print(next(iter(versions.values())))
+            return 0
+        if args.cmd == "check-sidecars":
+            problems = check_sidecars(Path(args.resources))
+            for line in problems:
+                print(line, file=sys.stderr)
+            if problems:
+                raise ReleaseError("universal 包需要两个架构的 sidecar 都就绪，已中止（未改动任何文件）")
             return 0
         if args.cmd == "check-version":
             # Same checks as bump, nothing written.

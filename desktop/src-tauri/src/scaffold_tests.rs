@@ -75,11 +75,39 @@ fn bundle_targets_and_gateway_resource_dir() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(targets, vec!["dmg", "nsis"]);
+    // Base config = Windows layout: one sidecar directory.
     assert_eq!(conf["bundle"]["resources"]["resources/gateway/"], "gateway/");
     assert!(
         manifest_dir().join("resources/gateway/.gitkeep").is_file(),
         "resources/gateway/.gitkeep keeps the empty dir buildable"
     );
+}
+
+#[test]
+fn macos_bundle_carries_one_sidecar_directory_per_architecture() {
+    // tauri.macos.conf.json is merged over the base config on macOS (JSON merge patch):
+    // `null` drops the Windows entry, the two arch entries replace it.
+    let conf = read_json("tauri.macos.conf.json");
+    let resources = &conf["bundle"]["resources"];
+    assert!(resources["resources/gateway/"].is_null(), "the single gateway/ entry must be removed on macOS");
+    assert!(resources.as_object().unwrap().contains_key("resources/gateway/"));
+    assert_eq!(resources["resources/gateway-aarch64/"], "gateway-aarch64/");
+    assert_eq!(resources["resources/gateway-x86_64/"], "gateway-x86_64/");
+    for arch in ["aarch64", "x86_64"] {
+        assert!(
+            manifest_dir().join(format!("resources/gateway-{arch}/.gitkeep")).is_file(),
+            "resources/gateway-{arch}/.gitkeep keeps the dir buildable"
+        );
+    }
+}
+
+#[test]
+fn directory_names_in_the_config_match_what_the_app_looks_for() {
+    let conf = read_json("tauri.macos.conf.json");
+    for arch in ["aarch64", "x86_64"] {
+        let dir = crate::gateway::sidecar::resource_subdir(false, arch);
+        assert_eq!(conf["bundle"]["resources"][format!("resources/{dir}/")], format!("{dir}/"));
+    }
 }
 
 #[test]

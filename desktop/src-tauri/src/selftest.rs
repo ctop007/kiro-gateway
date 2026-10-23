@@ -77,7 +77,7 @@ fn resource_dir() -> PathBuf {
     let bundle = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.join("Resources")))
-        .filter(|dir| dir.join("gateway").is_dir());
+        .filter(|dir| dir.join(crate::gateway::sidecar::resource_subdir(cfg!(windows), std::env::consts::ARCH)).is_dir());
     bundle.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"))
 }
 
@@ -357,7 +357,7 @@ pub fn run() -> i32 {
     c.check("stop returned the stopped state", service.status().state == GatewayState::Stopped, || format!("{:?}", service.status()));
     c.check("the sidecar process is gone", pid.map(|p| !SystemProcessOps.is_alive(p)).unwrap_or(true), || "pid still alive".into());
     c.check("the port is free again", SystemPorts.is_free(port), || "port still taken".into());
-    let sidecar_path = sidecar_dir.join("gateway").join("kiro-gateway");
+    let sidecar_path = sidecar_dir.join(crate::gateway::sidecar::resource_subdir(cfg!(windows), std::env::consts::ARCH)).join("kiro-gateway");
     c.check("no process of the sidecar executable remains", pgrep_count(&sidecar_path.to_string_lossy()) == 0, || {
         "pgrep still finds one".into()
     });

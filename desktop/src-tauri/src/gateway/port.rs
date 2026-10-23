@@ -257,7 +257,7 @@ fn logger_note(pid: u32, exe: &Path) {
     eprintln!("[gateway] reclaiming a leftover gateway (pid {pid}) from an earlier install location: {}", exe.display());
 }
 
-/// Whether `path` has the shape of a bundled sidecar: `<...>/resources/gateway/kiro-gateway`
+/// Whether `path` has the shape of a bundled sidecar: `<...>/resources/gateway/kiro-gateway` (macOS: `gateway-<arch>/`)
 /// (`kiro-gateway.exe` on Windows; the macOS bundle spells it `Contents/Resources/gateway/`).
 ///
 /// Only the shape is checked, the file need not exist (the App may have been moved away).
@@ -267,7 +267,7 @@ pub fn is_bundled_sidecar_path(path: &Path) -> bool {
     };
     let gateway_dir = path.parent();
     name_is(path.file_name(), &["kiro-gateway", "kiro-gateway.exe"])
-        && name_is(gateway_dir.and_then(Path::file_name), &["gateway"])
+        && gateway_dir.and_then(Path::file_name).is_some_and(|d| super::sidecar::is_gateway_dir_name(&d.to_string_lossy()))
         && name_is(gateway_dir.and_then(Path::parent).and_then(Path::file_name), &["resources"])
 }
 

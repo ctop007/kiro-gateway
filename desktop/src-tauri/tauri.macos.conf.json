@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "resources/gateway/": null,
+      "resources/gateway-aarch64/": "gateway-aarch64/",
+      "resources/gateway-x86_64/": "gateway-x86_64/"
+    }
+  }
+}

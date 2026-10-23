@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Build the kiro-gateway sidecar (PyInstaller --onedir) into
-# desktop/src-tauri/resources/gateway/ and smoke-test it.
+# desktop/src-tauri/resources/gateway-<arch>/ and smoke-test it.
 #
 # Usage:
-#   scripts/build-sidecar.sh                      build, smoke, then publish to the output dir
+#   scripts/build-sidecar.sh                      build for this machine's architecture, smoke, publish
+#   scripts/build-sidecar.sh --arch arm64|x86_64  build for that architecture (aarch64 is accepted as arm64).
+#                                                 x86_64 on an Apple Silicon Mac re-runs itself under
+#                                                 `arch -x86_64` (Rosetta) with an x86_64 interpreter.
 #   scripts/build-sidecar.sh --negative-check M   build WITHOUT hidden-import M into a temp dir
 #                                                 and succeed only if the smoke check fails
 #                                                 (proves the smoke check can catch a missing import)
 #
+# Layout per architecture (a universal macOS App ships both):
+#   arm64   venv .build-venv           output resources/gateway-aarch64/
+#   x86_64  venv .build-venv-x86_64    output resources/gateway-x86_64/
+#
 # Environment:
 #   KGW_PYTHON   interpreter used to create the build venv (default: first of
-#                python3.13 .. python3.10, python3 that is >= 3.10)
+#                python3.13 .. python3.10, python3 that is >= 3.10; for a non-native
+#                --arch, `uv python find cpython-3.13-macos-<arch>` is tried first).
+#                Its architecture must match --arch.
 #   KGW_SMOKE_TIMEOUT   seconds the smoke check waits for /health (default 60)
 #
 # The output directory is only replaced after the smoke check passes, so a
@@ -21,30 +30,73 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DESKTOP_DIR/.." && pwd)"
 SIDECAR_SCRIPTS="$SCRIPT_DIR/sidecar"
-VENV_DIR="$DESKTOP_DIR/.build-venv"
-OUT_DIR="$DESKTOP_DIR/src-tauri/resources/gateway"
 APP_NAME="kiro-gateway"
 SMOKE_TIMEOUT="${KGW_SMOKE_TIMEOUT:-60}"
 
+# Normalise an architecture name to the Rust/Tauri spelling (aarch64 | x86_64).
+normalize_arch() {
+  case "$1" in
+    arm64|aarch64) echo aarch64 ;;
+    x86_64|amd64|x64) echo x86_64 ;;
+    *) return 1 ;;
+  esac
+}
+
+NATIVE_ARCH="$(normalize_arch "$(uname -m)" || true)"
+TARGET_ARCH="$NATIVE_ARCH"
 NEGATIVE_MODULE=""
-case "${1:-}" in
-  "") ;;
-  --negative-check)
-    NEGATIVE_MODULE="${2:-}"
-    if [ -z "$NEGATIVE_MODULE" ]; then
-      echo "错误：--negative-check 需要一个模块名，例如 --negative-check main" >&2
+ORIG_ARGS=("$@")
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --negative-check)
+      NEGATIVE_MODULE="${2:-}"
+      if [ -z "$NEGATIVE_MODULE" ]; then
+        echo "错误：--negative-check 需要一个模块名，例如 --negative-check main" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --arch)
+      if [ -z "${2:-}" ] || ! TARGET_ARCH="$(normalize_arch "$2")"; then
+        echo "错误：--arch 只接受 arm64 或 x86_64（收到 '${2:-}'）" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    -h|--help)
+      sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "错误：不认识的参数 '$1'（可用 --arch <arm64|x86_64>、--negative-check <模块> 或 --help）" >&2
       exit 2
-    fi
-    ;;
-  -h|--help)
-    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    exit 0
-    ;;
-  *)
-    echo "错误：不认识的参数 '$1'（可用 --negative-check <模块> 或 --help）" >&2
-    exit 2
-    ;;
-esac
+      ;;
+  esac
+done
+if [ -z "$TARGET_ARCH" ]; then
+  echo "错误：不认识的本机架构 '$(uname -m)'，请用 --arch 指定" >&2
+  exit 2
+fi
+
+# Per-architecture venv and output directory. The arm64 venv keeps its historical name.
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  VENV_DIR="$DESKTOP_DIR/.build-venv"
+else
+  VENV_DIR="$DESKTOP_DIR/.build-venv-$TARGET_ARCH"
+fi
+OUT_DIR="$DESKTOP_DIR/src-tauri/resources/gateway-$TARGET_ARCH"
+
+# x86_64 on Apple Silicon: re-run the whole script under Rosetta so pip, PyInstaller and the
+# smoke check all see an x86_64 process.
+if [ "$TARGET_ARCH" != "$NATIVE_ARCH" ]; then
+  if [ "$TARGET_ARCH" = x86_64 ] && [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ] \
+     && [ "${KGW_UNDER_ARCH:-}" != 1 ]; then
+    export KGW_UNDER_ARCH=1
+    exec arch -x86_64 "${BASH_SOURCE[0]}" "${ORIG_ARGS[@]}"
+  fi
+  echo "错误：在 $NATIVE_ARCH 机器上无法构建 $TARGET_ARCH 的 sidecar（需要 Apple Silicon 的 Rosetta，或直接在目标架构的机器上构建）" >&2
+  exit 1
+fi
 
 log() { printf '==> %s\n' "$*"; }
 
@@ -53,10 +105,17 @@ pick_python() {
   local candidate
   if [ -n "${KGW_PYTHON:-}" ]; then
     candidates=("$KGW_PYTHON")
+  elif [ "$TARGET_ARCH" != "$(normalize_arch "$(uname -m)")" ] || [ "${KGW_UNDER_ARCH:-}" = 1 ]; then
+    # Cross-architecture build: the default python3 is the wrong architecture; ask uv for one.
+    candidates=()
+    if command -v uv >/dev/null 2>&1; then
+      uv_py="$(uv python find "cpython-3.13-macos-$TARGET_ARCH" 2>/dev/null || true)"
+      if [ -n "$uv_py" ]; then candidates=("$uv_py"); fi
+    fi
   else
     candidates=(python3.13 python3.12 python3.11 python3.10 python3)
   fi
-  for candidate in "${candidates[@]}"; do
+  for candidate in ${candidates[@]+"${candidates[@]}"}; do
     if command -v "$candidate" >/dev/null 2>&1 \
        && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
       command -v "$candidate"
@@ -67,9 +126,17 @@ pick_python() {
 }
 
 if ! BOOT_PYTHON="$(pick_python)"; then
-  echo "错误：找不到 Python 3.10 或更新的版本。装一个（例如 brew install python@3.13），或用 KGW_PYTHON 指定路径。" >&2
+  echo "错误：找不到 $TARGET_ARCH 架构的 Python 3.10 或更新的版本。装一个（例如 brew install python@3.13；x86_64 用 uv python install cpython-3.13-macos-x86_64），或用 KGW_PYTHON 指定路径。" >&2
   exit 1
 fi
+PY_PLATFORM="$("$BOOT_PYTHON" -c 'import sysconfig; print(sysconfig.get_platform())')"
+case "$TARGET_ARCH:$PY_PLATFORM" in
+  aarch64:*arm64*|x86_64:*x86_64*) ;;
+  *)
+    echo "错误：解释器 $BOOT_PYTHON 的平台是 $PY_PLATFORM，与 --arch $TARGET_ARCH 不符。用 KGW_PYTHON 指向 $TARGET_ARCH 版本的 Python。" >&2
+    exit 1
+    ;;
+esac
 log "bootstrap Python: $BOOT_PYTHON ($("$BOOT_PYTHON" -c 'import sys, sysconfig; print(sys.version.split()[0], sysconfig.get_platform())'))"
 
 # --- 2. build venv ------------------------------------------------------------
@@ -131,7 +198,7 @@ if [ ! -x "$STAGE_DIR/$APP_NAME" ]; then
 fi
 
 # --- 5. smoke -----------------------------------------------------------------
-log "冒烟测试（临时 HOME、81xx 端口、假 kiro-cli 数据库、不联网）"
+log "冒烟测试 [$TARGET_ARCH]（临时 HOME、81xx 端口、假 kiro-cli 数据库、不联网）"
 set +e
 "$VENV_PY" -I "$SIDECAR_SCRIPTS/smoke_sidecar.py" "$STAGE_DIR/$APP_NAME" "$STAGE_DIR/tiktoken_cache" --timeout "$SMOKE_TIMEOUT"
 SMOKE_STATUS=$?

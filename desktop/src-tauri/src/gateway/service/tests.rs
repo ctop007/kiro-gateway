@@ -53,7 +53,7 @@ fn fixture() -> Fixture {
 }
 
 fn install_sidecar(f: &Fixture, mode: &str) -> PathBuf {
-    let sidecar = write_fake_sidecar(&f.resources.join("gateway"), mode);
+    let sidecar = write_fake_sidecar(&f.resources.join(crate::gateway::sidecar::resource_subdir(cfg!(windows), std::env::consts::ARCH)), mode);
     assert_eq!(sidecar.exe.file_name().unwrap(), exe_name(false));
     sidecar.exe
 }
@@ -200,6 +200,7 @@ fn start_on_an_active_gateway_does_not_check_the_environment_or_launch_again() {
 #[test]
 fn a_missing_sidecar_is_a_start_failure_state_with_a_reinstall_hint() {
     let f = fixture();
+    fs::create_dir_all(f.resources.join(crate::gateway::sidecar::resource_subdir(cfg!(windows), std::env::consts::ARCH))).unwrap();
     let s = service(&f, FakeGate::ok(&f.db), free_port());
     let status = s.start().unwrap();
     assert_eq!(status.state, GatewayState::StartFailed);
@@ -208,6 +209,21 @@ fn a_missing_sidecar_is_a_start_failure_state_with_a_reinstall_hint() {
     assert!(failure.message.contains("重新安装"), "{}", failure.message);
     assert!(!failure.message.contains('/'));
     assert_eq!(s.status(), status);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bundle_without_this_cpu_architecture_is_a_start_failure_naming_the_cpu() {
+    let f = fixture();
+    // Only the other architecture's sidecar is installed.
+    let other = if std::env::consts::ARCH == "aarch64" { "x86_64" } else { "aarch64" };
+    write_fake_sidecar(&f.resources.join(format!("gateway-{other}")), "serve");
+    let s = service(&f, FakeGate::ok(&f.db), free_port());
+    let status = s.start().unwrap();
+    assert_eq!(status.state, GatewayState::StartFailed);
+    let message = status.failure.unwrap().message;
+    assert!(message.contains("CPU") && message.contains("重新下载"), "{message}");
+    assert!(!message.contains('/'));
 }
 
 #[test]
