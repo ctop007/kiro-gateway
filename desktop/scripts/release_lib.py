@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Helpers behind desktop/scripts/release.sh (tasks 8.7).
+"""Helpers for the desktop release (design decision 11, GitHub Releases edition).
 
-Pure functions (version bump, manifest, upload plan, ordered upload) plus a
-small CLI that release.sh calls. Standard library only, except the real COS
-uploader which imports ``qcloud_cos`` lazily.
+Used by the ``release`` job of .github/workflows/desktop-release.yml: stage the
+build outputs under space-free names, build ``latest.json`` whose URLs point at
+the assets of that very GitHub Release, and write the release notes. Also offers
+``bump`` / ``check-version`` for the three version files. Standard library only.
 
-Run with ``/opt/miniconda3/bin/python -I release_lib.py <command> ...``.
-Credentials are read from the environment or ``~/.tccli/default.credential``
-and are never printed.
+Run with ``python3 -I release_lib.py <command> ...``.
 """
 
 import argparse
@@ -17,18 +16,11 @@ import os
 import re
 import shutil
 import sys
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-BUCKET = "tools-1254376798"
-REGION = "ap-guangzhou"
-PREFIX = "kiro-gateway/desktop"
-BASE_URL = f"https://{BUCKET}.cos.{REGION}.myqcloud.com"
-MANIFEST_KEY = f"{PREFIX}/latest.json"
 DEFAULT_MIN_REQUIRED = "0.0.1"
+FORCE_MARKER = "[force-upgrade]"
 
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
@@ -137,48 +129,6 @@ def bump_versions(root: Path, version: str, write: bool = True) -> List[str]:
     return changes
 
 
-VERSION_FILES = ("package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock")
-
-
-def snapshot_version_files(root: Path, dest: Path) -> List[str]:
-    """Copies the files ``bump_versions`` may touch into ``dest`` (byte for byte).
-
-    Returns:
-        Relative names that were saved (Cargo.lock is skipped when absent).
-    """
-    dest.mkdir(parents=True, exist_ok=True)
-    saved: List[str] = []
-    for rel in VERSION_FILES:
-        src = root / rel
-        if src.is_file():
-            target = dest / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, target)
-            saved.append(rel)
-    return saved
-
-
-def restore_version_files(root: Path, snapshot: Path) -> List[str]:
-    """Puts back what ``snapshot_version_files`` saved and removes leftover temp files.
-
-    Returns:
-        Relative names that were restored.
-    """
-    restored: List[str] = []
-    for rel in VERSION_FILES:
-        saved = snapshot / rel
-        target = root / rel
-        leftover = target.with_name(target.name + ".release-tmp")
-        if leftover.exists():
-            leftover.unlink()
-        if saved.is_file():
-            tmp = target.with_name(target.name + ".release-restore")
-            shutil.copyfile(saved, tmp)
-            os.replace(tmp, target)
-            restored.append(rel)
-    return restored
-
-
 # ---------------------------------------------------------------- artifacts
 
 
@@ -223,55 +173,21 @@ def collect_artifacts(version: str, mac_bundle: Optional[Path], win_bundle: Opti
     return out
 
 
-@dataclass(frozen=True)
-class Step:
-    """One upload."""
+def canonical_names(version: str) -> Dict[str, str]:
+    """Space-free file name per artifact key.
 
-    kind: str  # installer | package | sig | manifest
-    local: str
-    key: str
-    content_type: str
-    cache_control: Optional[str] = None
-    size: int = 0
-
-    @property
-    def url(self) -> str:
-        return f"{BASE_URL}/{self.key}"
-
-
-def canonical_names(version: str) -> Dict[str, Tuple[str, str, str]]:
-    """(canonical file name, kind, content type) per artifact key."""
-    setup = f"Kiro-Gateway_{version}_x64-setup.exe"
-    dmg = f"Kiro-Gateway_{version}_universal.dmg"
-    return {
-        "mac_dmg": (dmg, "installer", "application/x-apple-diskimage"),
-        "win_setup": (setup, "installer", "application/vnd.microsoft.portable-executable"),
-        "mac_package": ("Kiro-Gateway.app.tar.gz", "package", "application/gzip"),
-        "mac_package_sig": ("Kiro-Gateway.app.tar.gz.sig", "sig", "text/plain; charset=utf-8"),
-        "win_setup_sig": (setup + ".sig", "sig", "text/plain; charset=utf-8"),
-    }
-
-
-def build_plan(version: str, staged: Dict[str, Path], manifest_path: Path) -> List[Step]:
-    """Upload order: installers, update packages, .sig files, latest.json last.
-
-    The manifest is the only object clients poll, so it goes up only after
-    every file it points to is in place (and checked with HEAD).
+    These are the names of the files uploaded to the GitHub Release and the ones
+    ``latest.json`` points at (GitHub rewrites spaces in asset names, so the raw
+    build names with spaces must never be uploaded).
     """
-    names = canonical_names(version)
-    order = ["mac_dmg", "win_setup", "mac_package", "mac_package_sig", "win_setup_sig"]
-    steps: List[Step] = []
-    for key in order:
-        if key not in staged:
-            continue
-        name, kind, ctype = names[key]
-        path = staged[key]
-        steps.append(Step(kind, str(path), f"{PREFIX}/{version}/{name}", ctype, None, path.stat().st_size))
-    steps.append(
-        Step("manifest", str(manifest_path), MANIFEST_KEY, "application/json; charset=utf-8",
-             "no-cache, max-age=0", manifest_path.stat().st_size)
-    )
-    return steps
+    setup = f"Kiro-Gateway_{version}_x64-setup.exe"
+    return {
+        "mac_dmg": f"Kiro-Gateway_{version}_universal.dmg",
+        "win_setup": setup,
+        "mac_package": "Kiro-Gateway.app.tar.gz",
+        "mac_package_sig": "Kiro-Gateway.app.tar.gz.sig",
+        "win_setup_sig": setup + ".sig",
+    }
 
 
 def stage_artifacts(version: str, found: Dict[str, Path], out_dir: Path) -> Dict[str, Path]:
@@ -280,10 +196,13 @@ def stage_artifacts(version: str, found: Dict[str, Path], out_dir: Path) -> Dict
     out_dir.mkdir(parents=True, exist_ok=True)
     staged: Dict[str, Path] = {}
     for key, src in found.items():
-        dest = out_dir / names[key][0]
+        dest = out_dir / names[key]
         shutil.copyfile(src, dest)
         staged[key] = dest
     return staged
+
+
+# ---------------------------------------------------------------- manifest
 
 
 # ---------------------------------------------------------------- manifest
@@ -302,16 +221,35 @@ def build_manifest(
     pub_date: str,
     min_required: str,
     staged: Dict[str, Path],
+    base_url: str,
 ) -> dict:
-    """Builds latest.json (design decision 11 plus ``manualDownload``)."""
+    """Builds latest.json (design decision 11 plus ``manualDownload``).
+
+    Args:
+        version: Release version (x.y.z).
+        notes: Update notes shown to users.
+        pub_date: ISO 8601 publication time.
+        min_required: Lowest version that may keep running.
+        staged: Output of ``stage_artifacts``.
+        base_url: Directory URL of the release assets, e.g.
+            ``https://github.com/<owner>/<repo>/releases/download/<tag>``; every
+            URL in the manifest is ``<base_url>/<staged file name>``.
+
+    Raises:
+        ReleaseError: bad version, floor above the version, empty signature, no platform,
+            or a ``base_url`` that is not https.
+    """
     require_version(version)
     require_version(min_required, "minRequiredVersion")
     if parse_version(min_required) > parse_version(version):
         raise ReleaseError(f"minRequiredVersion {min_required} 不能高于发布版本 {version}")
+    base = (base_url or "").strip().rstrip("/")
+    if not base.startswith("https://"):
+        raise ReleaseError(f"--base-url 必须以 https:// 开头，收到：{base_url!r}")
     names = canonical_names(version)
 
     def url(key: str) -> str:
-        return f"{BASE_URL}/{PREFIX}/{version}/{names[key][0]}"
+        return f"{base}/{names[key]}"
 
     platforms: Dict[str, dict] = {}
     manual: Dict[str, str] = {}
@@ -385,246 +323,107 @@ def resolve_min_required(version: str, force: bool, previous_min: Optional[str])
     return floor if parse_version(floor) <= parse_version(version) else version
 
 
-def published_manifest_url() -> str:
-    """Address of the live manifest; ``RELEASE_MANIFEST_URL`` overrides it (tests, read only)."""
-    return os.environ.get("RELEASE_MANIFEST_URL") or f"{BASE_URL}/{MANIFEST_KEY}"
+def split_tag_notes(raw: str) -> Tuple[str, bool]:
+    """Splits an annotated tag body into update notes and the force flag.
+
+    A line that is exactly ``[force-upgrade]`` turns the force flag on and is
+    removed from the notes (users never see the marker).
+
+    Raises:
+        ReleaseError: nothing is left to show as notes.
+    """
+    lines = (raw or "").replace("\r\n", "\n").split("\n")
+    force = any(line == FORCE_MARKER for line in lines)
+    notes = "\n".join(line for line in lines if line != FORCE_MARKER).strip()
+    if not notes:
+        raise ReleaseError("更新说明是空的：用 git tag -a <tag> -F notes.md 打 tag，正文写更新说明")
+    return notes, force
 
 
-NO_PUBLISHED_MANIFEST_MESSAGE = (
-    "无法读取线上 latest.json，为避免降低最低可用版本已中止；确认是首次发布请加 FIRST_RELEASE=1"
-)
-
-
-def previous_min_for_release(
-    url: str,
-    force: bool,
-    first_release: bool,
-    fetch: Optional[Callable[[str], Optional[str]]] = None,
-) -> Optional[str]:
-    """minRequiredVersion of the published manifest, which a non-forced release must carry over.
+def read_previous_min(path: Optional[Path]) -> Optional[str]:
+    """``minRequiredVersion`` of the previously published ``latest.json``.
 
     Args:
-        url: Address of the published ``latest.json``.
-        force: FORCE release: the floor becomes the new version, nothing to carry over.
-        first_release: Nothing is published yet, so there is no floor to keep.
-        fetch: Reader of the published floor (defaults to ``fetch_previous_min``).
+        path: Local copy of the previous manifest, or None when it could not be fetched.
 
     Returns:
-        The published floor, or None when ``force`` or ``first_release`` skip the lookup.
-
-    Raises:
-        ReleaseError: the published manifest cannot be read (offline, 404, no valid
-            ``minRequiredVersion``). Falling back to the default floor would silently
-            lift an earlier forced upgrade.
+        The floor, or None when the file is missing, unreadable or has no valid floor.
     """
-    if force or first_release:
+    if path is None or not path.is_file():
         return None
-    previous = (fetch or fetch_previous_min)(url)
-    if previous is None:
-        raise ReleaseError(NO_PUBLISHED_MANIFEST_MESSAGE)
-    return previous
-
-
-def confirm_force(version: str, read: Callable[[], str]) -> bool:
-    """FORCE=1 needs the version typed back exactly."""
-    return read().strip() == version
-
-
-# ---------------------------------------------------------------- upload
-
-
-def load_credentials(env: Dict[str, str], home: Path) -> Tuple[str, str]:
-    """COS_SECRET_ID / COS_SECRET_KEY, else ~/.tccli/default.credential."""
-    sid, skey = env.get("COS_SECRET_ID", ""), env.get("COS_SECRET_KEY", "")
-    if sid and skey:
-        return sid, skey
-    path = home / ".tccli" / "default.credential"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        sid, skey = data.get("secretId", ""), data.get("secretKey", "")
+        value = json.loads(path.read_text(encoding="utf-8")).get("minRequiredVersion")
     except (OSError, ValueError, AttributeError):
-        sid = skey = ""
-    if not (sid and skey):
-        raise ReleaseError("找不到 COS 凭证：设置 COS_SECRET_ID / COS_SECRET_KEY，或配置 ~/.tccli/default.credential")
-    return sid, skey
+        return None
+    return value if isinstance(value, str) and parse_version(value) else None
 
 
-class CosUploader:
-    """Uploads with qcloud_cos. Credentials stay inside this object."""
+def check_manifest_assets(manifest: dict, assets_dir: Path, base_url: str) -> List[str]:
+    """Problems that would make the manifest point at files the Release will not have.
 
-    def __init__(self, secret_id: str, secret_key: str) -> None:
-        try:
-            from qcloud_cos import CosConfig, CosS3Client
-        except ImportError as exc:
-            raise ReleaseError("缺少 qcloud_cos，请用装了它的 Python（/opt/miniconda3/bin/python）运行") from exc
-        config = CosConfig(Region=REGION, SecretId=secret_id, SecretKey=secret_key, Scheme="https")
-        self._client = CosS3Client(config)
-
-    def put(self, step: Step) -> None:
-        kwargs = {"ContentType": step.content_type}
-        if step.cache_control:
-            kwargs["CacheControl"] = step.cache_control
-        self._client.upload_file(Bucket=BUCKET, Key=step.key, LocalFilePath=step.local, **kwargs)
-
-
-def head_url(url: str, timeout: float = 20.0) -> Tuple[int, Optional[int]]:
-    """(status, content-length) of a HEAD request; status 0 on network failure."""
-    req = urllib.request.Request(url, method="HEAD")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            length = resp.headers.get("Content-Length")
-            return resp.status, int(length) if length and length.isdigit() else None
-    except urllib.error.HTTPError as exc:
-        return exc.code, None
-    except (urllib.error.URLError, OSError):
-        return 0, None
-
-
-def run_upload(
-    plan: List[Step],
-    put: Callable[[Step], None],
-    head: Callable[[str], Tuple[int, Optional[int]]],
-    log: Callable[[str], None] = print,
-) -> None:
-    """Executes ``plan`` in order; the manifest only after every other file passed HEAD.
-
-    Raises:
-        ReleaseError: a HEAD check failed; the manifest has NOT been uploaded.
+    Every URL in the manifest must be ``<base_url>/<name>`` with ``<name>`` an existing
+    file in ``assets_dir`` (the directory that is uploaded to the Release).
     """
-    if not plan or plan[-1].kind != "manifest" or any(s.kind == "manifest" for s in plan[:-1]):
-        raise ReleaseError("上传计划必须以 latest.json 结尾，且只有一个")
-    files, manifest = plan[:-1], plan[-1]
-    for step in files:
-        log(f"上传 {step.key}")
-        put(step)
-    for step in files:
-        status, length = head(step.url)
-        if status != 200:
-            raise ReleaseError(f"HEAD 校验失败（HTTP {status}）：{step.key}。latest.json 没有更新")
-        if length is not None and length != step.size:
-            raise ReleaseError(f"HEAD 校验失败（大小 {length} 与本地 {step.size} 不符）：{step.key}。latest.json 没有更新")
-        log(f"已确认 {step.key}")
-    log(f"上传 {manifest.key}")
-    put(manifest)
+    base = base_url.strip().rstrip("/") + "/"
+    urls = [e.get("url", "") for e in manifest.get("platforms", {}).values()]
+    urls += list(manifest.get("manualDownload", {}).values())
+    problems: List[str] = []
+    for url in urls:
+        if not str(url).startswith(base):
+            problems.append(f"{url} 不在 {base} 下")
+            continue
+        name = str(url)[len(base):]
+        if "/" in name or " " in name or not (assets_dir / name).is_file():
+            problems.append(f"Release 里不会有 {name}")
+    return problems
 
 
 # ---------------------------------------------------------------- CLI
 
 
-def fetch_previous_min(url: str, timeout: float = 15.0) -> Optional[str]:
-    """minRequiredVersion of the currently published manifest, None if unavailable."""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        value = data.get("minRequiredVersion")
-        return value if isinstance(value, str) and parse_version(value) else None
-    except (urllib.error.URLError, OSError, ValueError, AttributeError):
-        return None
-
-
-def _notes_from(arg: str) -> str:
-    if not arg:
-        raise ReleaseError("NOTES 不能为空：传更新说明文件路径或一行文字")
-    p = Path(arg)
-    text = p.read_text(encoding="utf-8") if p.is_file() else arg
-    text = text.strip()
+def _read_notes(args: argparse.Namespace) -> Tuple[str, bool]:
+    if args.tag_body:
+        return split_tag_notes(Path(args.tag_body).read_text(encoding="utf-8"))
+    if not args.notes:
+        raise ReleaseError("需要 --tag-body（tag 正文文件）或 --notes（文件路径或一行文字）")
+    p = Path(args.notes)
+    text = (p.read_text(encoding="utf-8") if p.is_file() else args.notes).strip()
     if not text:
         raise ReleaseError("NOTES 不能为空")
-    return text
-
-
-# Mach-O 64-bit little-endian magic and the CPU types of the two macOS sidecar architectures.
-_MACHO_MAGIC_64 = 0xFEEDFACF
-_MACHO_CPU = {"aarch64": 0x0100000C, "x86_64": 0x01000007}
-SIDECAR_ARCHS = ("aarch64", "x86_64")
-
-
-def _macho_cpu(path: Path) -> Optional[int]:
-    """CPU type of a thin 64-bit Mach-O file, or None for anything else (fat, script, ELF)."""
-    with path.open("rb") as f:
-        head = f.read(8)
-    if len(head) < 8 or int.from_bytes(head[:4], "little") != _MACHO_MAGIC_64:
-        return None
-    return int.from_bytes(head[4:8], "little")
-
-
-def check_sidecars(resources: Path) -> List[str]:
-    """Problems that would make a universal macOS bundle ship a broken sidecar.
-
-    A universal App carries ``gateway-aarch64/`` and ``gateway-x86_64/``; Tauri happily bundles
-    an empty directory (only a ``.gitkeep``), which would produce an Intel build that cannot
-    start its gateway. Each directory must hold a ``kiro-gateway`` executable of its own
-    architecture.
-
-    Args:
-        resources: ``desktop/src-tauri/resources``.
-
-    Returns:
-        Chinese problem descriptions; empty when both sidecars are in place.
-    """
-    problems: List[str] = []
-    for arch in SIDECAR_ARCHS:
-        exe = resources / f"gateway-{arch}" / "kiro-gateway"
-        build = "scripts/build-sidecar.sh --arch " + ("arm64" if arch == "aarch64" else "x86_64")
-        if not exe.is_file():
-            problems.append(f"缺少 {arch} 的 sidecar（{exe}），先运行 {build}")
-            continue
-        cpu = _macho_cpu(exe)
-        if cpu != _MACHO_CPU[arch]:
-            problems.append(f"{exe} 不是 {arch} 的 Mach-O 可执行文件，重新运行 {build}")
-    return problems
-
-
-def make_fake_artifacts(version: str, bundle: Path) -> None:
-    """Placeholder outputs for --dry-run without a real build."""
-    (bundle / "macos").mkdir(parents=True, exist_ok=True)
-    (bundle / "dmg").mkdir(parents=True, exist_ok=True)
-    (bundle / "macos/Kiro Gateway.app.tar.gz").write_bytes(b"dry-run placeholder package")
-    (bundle / "macos/Kiro Gateway.app.tar.gz.sig").write_text("DRY-RUN-PLACEHOLDER-SIGNATURE\n", encoding="utf-8")
-    (bundle / "dmg" / f"Kiro Gateway_{version}_universal.dmg").write_bytes(b"dry-run placeholder dmg")
+    return text, False
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
+    """Stages assets, writes ``<out>/assets/`` (upload this directory) and ``<out>/notes.md``."""
     version = args.version
     require_version(version)
-    notes = _notes_from(args.notes)
+    notes, tag_force = _read_notes(args)
+    force = args.force or tag_force
     mac = Path(args.bundle_dir) if args.bundle_dir else None
     win = Path(args.windows_dir) if args.windows_dir else None
     found = collect_artifacts(version, mac, win)
     out = Path(args.out)
-    staged = stage_artifacts(version, found, out)
-    prev_min = None
-    if not args.no_fetch:
-        prev_min = previous_min_for_release(published_manifest_url(), args.force, args.first_release)
-    min_required = resolve_min_required(version, args.force, prev_min)
+    assets = out / "assets"
+    staged = stage_artifacts(version, found, assets)
+    previous = read_previous_min(Path(args.previous_manifest)) if args.previous_manifest else None
+    if force:
+        print(f"强制升级：minRequiredVersion = {version}")
+    elif previous is None:
+        print(f"没有取到上一个已发布版本的 latest.json，minRequiredVersion 用默认值 {DEFAULT_MIN_REQUIRED}")
+    else:
+        print(f"沿用上一个已发布版本的 minRequiredVersion {previous}")
+    min_required = resolve_min_required(version, force, previous)
     pub_date = dt.datetime.now().astimezone().replace(microsecond=0).isoformat()
-    manifest = build_manifest(version, notes, pub_date, min_required, staged)
-    problems = validate_manifest(manifest)
+    manifest = build_manifest(version, notes, pub_date, min_required, staged, args.base_url)
+    problems = validate_manifest(manifest) + check_manifest_assets(manifest, assets, args.base_url)
     if problems:
         raise ReleaseError("生成的清单不完整：" + "；".join(problems))
-    manifest_path = out / "latest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    plan = build_plan(version, staged, manifest_path)
-    (out / "plan.json").write_text(json.dumps([s.__dict__ for s in plan], ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"版本 {version}，minRequiredVersion {min_required}{'（FORCE）' if args.force else ''}")
-    print(f"清单：{manifest_path}")
-    print("上传顺序：")
-    for i, s in enumerate(plan, 1):
-        print(f"  {i}. [{s.kind}] {s.key}  ({s.size} 字节)")
-    print("  HEAD 校验位于清单之前")
-    return 0
-
-
-def cmd_upload(args: argparse.Namespace) -> int:
-    out = Path(args.staging)
-    plan = [Step(**d) for d in json.loads((out / "plan.json").read_text(encoding="utf-8"))]
-    problems = validate_manifest(json.loads(Path(plan[-1].local).read_text(encoding="utf-8")))
-    if problems:
-        raise ReleaseError("清单不完整，拒绝上传：" + "；".join(problems))
-    sid, skey = load_credentials(dict(os.environ), Path.home())
-    uploader = CosUploader(sid, skey)
-    run_upload(plan, uploader.put, head_url)
-    print("完成。")
+    (assets / "latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / "notes.md").write_text(notes + "\n", encoding="utf-8")
+    print(f"版本 {version}，minRequiredVersion {min_required}")
+    print("将上传到 Release 的文件：")
+    for p in sorted(assets.iterdir()):
+        print(f"  {p.name}  ({p.stat().st_size} 字节)")
     return 0
 
 
@@ -641,33 +440,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = sub.add_parser("check-version")
     p.add_argument("--root", required=True)
     p.add_argument("--version", required=True)
-    p = sub.add_parser("fake-artifacts")
+    p = sub.add_parser("prepare", help="stage assets and write latest.json for a GitHub Release")
     p.add_argument("--version", required=True)
-    p.add_argument("--bundle-dir", required=True)
-    p = sub.add_parser("prepare")
-    p.add_argument("--version", required=True)
-    p.add_argument("--notes", required=True)
+    p.add_argument("--base-url", required=True, help="https URL of the Release's asset directory")
+    p.add_argument("--tag-body", help="file with the annotated tag body (a [force-upgrade] line forces)")
+    p.add_argument("--notes", help="update notes: a file path or one line of text")
     p.add_argument("--force", action="store_true")
     p.add_argument("--bundle-dir")
     p.add_argument("--windows-dir")
+    p.add_argument("--previous-manifest", help="local copy of the previously published latest.json")
     p.add_argument("--out", required=True)
-    p.add_argument("--no-fetch", action="store_true", help="do not read the published manifest")
-    p.add_argument("--first-release", action="store_true", help="nothing is published yet: no floor to keep")
-    p = sub.add_parser("check-published")
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--first-release", action="store_true")
-    p = sub.add_parser("check-sidecars")
-    p.add_argument("--resources", required=True)
-    p = sub.add_parser("snapshot")
-    p.add_argument("--root", required=True)
-    p.add_argument("--dir", required=True)
-    p = sub.add_parser("restore")
-    p.add_argument("--root", required=True)
-    p.add_argument("--dir", required=True)
-    p = sub.add_parser("upload")
-    p.add_argument("--staging", required=True)
-    p = sub.add_parser("confirm-force")
-    p.add_argument("--version", required=True)
     p = sub.add_parser("verify-manifest")
     p.add_argument("path")
 
@@ -679,15 +461,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raise ReleaseError(f"三处版本号不一致：{versions}")
             print(next(iter(versions.values())))
             return 0
-        if args.cmd == "check-sidecars":
-            problems = check_sidecars(Path(args.resources))
-            for line in problems:
-                print(line, file=sys.stderr)
-            if problems:
-                raise ReleaseError("universal 包需要两个架构的 sidecar 都就绪，已中止（未改动任何文件）")
-            return 0
         if args.cmd == "check-version":
-            # Same checks as bump, nothing written.
             for line in bump_versions(Path(args.root), args.version, write=False):
                 print(f"将修改 {line}")
             return 0
@@ -695,27 +469,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             for line in bump_versions(Path(args.root), args.version, write=not args.dry_run):
                 print(line)
             return 0
-        if args.cmd == "check-published":
-            previous_min_for_release(published_manifest_url(), args.force, args.first_release)
-            return 0
-        if args.cmd == "snapshot":
-            snapshot_version_files(Path(args.root), Path(args.dir))
-            return 0
-        if args.cmd == "restore":
-            for rel in restore_version_files(Path(args.root), Path(args.dir)):
-                print(f"已恢复 {rel}")
-            return 0
-        if args.cmd == "fake-artifacts":
-            make_fake_artifacts(args.version, Path(args.bundle_dir))
-            return 0
         if args.cmd == "prepare":
             return cmd_prepare(args)
-        if args.cmd == "upload":
-            return cmd_upload(args)
-        if args.cmd == "confirm-force":
-            sys.stdout.write(f"强制升级会让所有低于 {args.version} 的旧版立刻无法使用。\n再输入一遍版本号 {args.version} 确认：")
-            sys.stdout.flush()
-            return 0 if confirm_force(args.version, sys.stdin.readline) else 1
         if args.cmd == "verify-manifest":
             problems = validate_manifest(json.loads(Path(args.path).read_text(encoding="utf-8")))
             for p_ in problems:

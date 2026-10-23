@@ -118,8 +118,11 @@ fn update_manifest_url_is_declared_once() {
     assert_eq!(endpoints.len(), 1, "exactly one manifest endpoint");
     let url = endpoints[0].as_str().unwrap();
     assert!(url.starts_with("https://"), "manifest must be fetched over https");
-    assert!(url.contains(".cos.") && url.contains(".myqcloud.com/"), "manifest is on Tencent COS");
-    assert!(url.ends_with("/kiro-gateway/desktop/latest.json"));
+    assert_eq!(
+        url, "https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json",
+        "manifest is the latest.json asset of the newest GitHub Release"
+    );
+    assert!(!url.contains("myqcloud.com"), "Tencent COS is no longer used");
     assert!(!url.contains("{{"), "static manifest: no updater URL template variables");
 }
 

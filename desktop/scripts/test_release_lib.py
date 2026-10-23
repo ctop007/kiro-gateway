@@ -1,8 +1,8 @@
-"""Tests for release_lib.py (version bump, manifest, upload order, FORCE).
+"""Tests for release_lib.py (version bump, GitHub Release manifest, tag notes, FORCE).
 
 Run with:
     /opt/miniconda3/bin/python -I -m unittest discover -s desktop/scripts -p 'test_release_lib.py' -v
-No network and no COS access: uploads and HEAD checks are injected fakes.
+No network: the previous manifest is a local file.
 """
 
 import json
@@ -17,6 +17,24 @@ import release_lib as rl  # noqa: E402
 
 DESKTOP = Path(__file__).resolve().parent.parent
 V = "0.0.2"
+BASE = "https://github.com/octo/kiro-gateway/releases/download/desktop-v0.0.2"
+
+
+def make_fake_artifacts(version: str, bundle: Path) -> None:
+    """Build outputs as Tauri names them (with spaces), placeholder content."""
+    (bundle / "macos").mkdir(parents=True, exist_ok=True)
+    (bundle / "dmg").mkdir(parents=True, exist_ok=True)
+    (bundle / "macos/Kiro Gateway.app.tar.gz").write_bytes(b"placeholder package")
+    (bundle / "macos/Kiro Gateway.app.tar.gz.sig").write_text("DRY-RUN-PLACEHOLDER-SIGNATURE\n", encoding="utf-8")
+    (bundle / "dmg" / f"Kiro Gateway_{version}_universal.dmg").write_bytes(b"placeholder dmg")
+
+
+def make_win_bundle(tmp: Path, version: str = V) -> Path:
+    nsis = tmp / "winbundle" / "nsis"
+    nsis.mkdir(parents=True)
+    (nsis / f"Kiro Gateway_{version}_x64-setup.exe").write_bytes(b"w")
+    (nsis / f"Kiro Gateway_{version}_x64-setup.exe.sig").write_text("WINSIG\n")
+    return nsis.parent
 
 
 def make_root(tmp: Path, version="0.0.1", lock=True) -> Path:
@@ -33,7 +51,7 @@ def make_root(tmp: Path, version="0.0.1", lock=True) -> Path:
 
 def make_bundle(tmp: Path, version=V, sig=True, dmg=True) -> Path:
     b = tmp / "bundle"
-    rl.make_fake_artifacts(version, b)
+    make_fake_artifacts(version, b)
     if not sig:
         (b / "macos/Kiro Gateway.app.tar.gz.sig").unlink()
     if not dmg:
@@ -108,21 +126,21 @@ class ManifestTests(unittest.TestCase):
 
     def test_manifest_has_every_field_and_both_mac_targets(self):
         with tempfile.TemporaryDirectory() as d:
-            m = rl.build_manifest(V, "line1\nline2", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d)))
+            m = rl.build_manifest(V, "line1\nline2", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d)), BASE)
             self.assertEqual(rl.validate_manifest(m), [])
             self.assertEqual(m["version"], V)
             self.assertEqual(m["minRequiredVersion"], "0.0.1")
             self.assertEqual(set(m["platforms"]), {"darwin-aarch64", "darwin-x86_64"})
             p = m["platforms"]["darwin-aarch64"]
-            self.assertEqual(p["url"], f"{rl.BASE_URL}/kiro-gateway/desktop/{V}/Kiro-Gateway.app.tar.gz")
+            self.assertEqual(p["url"], f"{BASE}/Kiro-Gateway.app.tar.gz")
             self.assertEqual(p["signature"], "DRY-RUN-PLACEHOLDER-SIGNATURE")
-            self.assertEqual(m["manualDownload"]["darwin"], f"{rl.BASE_URL}/kiro-gateway/desktop/{V}/Kiro-Gateway_{V}_universal.dmg")
+            self.assertEqual(m["manualDownload"]["darwin"], f"{BASE}/Kiro-Gateway_{V}_universal.dmg")
             urls = [e["url"] for e in m["platforms"].values()] + list(m["manualDownload"].values())
             self.assertTrue(all(" " not in u for u in urls), urls)
 
     def test_windows_entry_added_when_present(self):
         with tempfile.TemporaryDirectory() as d:
-            m = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d), win=True))
+            m = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d), win=True), BASE)
             self.assertEqual(rl.validate_manifest(m), [])
             self.assertEqual(m["platforms"]["windows-x86_64"]["signature"], "WINSIG")
             self.assertTrue(m["manualDownload"]["windows"].endswith("x64-setup.exe"))
@@ -130,18 +148,18 @@ class ManifestTests(unittest.TestCase):
     def test_min_required_above_version_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(rl.ReleaseError):
-                rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.3", self.staged(Path(d)))
+                rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.3", self.staged(Path(d)), BASE)
 
     def test_empty_signature_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             staged = self.staged(Path(d))
             staged["mac_package_sig"].write_text("  \n")
             with self.assertRaises(rl.ReleaseError):
-                rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged)
+                rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged, BASE)
 
     def test_validate_manifest_reports_each_missing_field(self):
         with tempfile.TemporaryDirectory() as d:
-            good = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d)))
+            good = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", self.staged(Path(d)), BASE)
         for field in ["version", "minRequiredVersion", "notes", "pub_date", "platforms", "manualDownload"]:
             broken = dict(good)
             del broken[field]
@@ -162,11 +180,6 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(rl.resolve_min_required("0.0.4", False, None), "0.0.1")
         self.assertEqual(rl.resolve_min_required("0.0.4", False, "garbage"), "0.0.1")
         self.assertEqual(rl.resolve_min_required("0.0.2", False, "0.0.9"), "0.0.2")
-
-    def test_force_confirmation_needs_exact_version(self):
-        self.assertTrue(rl.confirm_force("0.0.3", lambda: "0.0.3\n"))
-        for typed in ["", "y", "yes", "0.0.2", "0.0.30", "v0.0.3"]:
-            self.assertFalse(rl.confirm_force("0.0.3", lambda t=typed: t), typed)
 
 
 class ArtifactTests(unittest.TestCase):
@@ -189,98 +202,200 @@ class ArtifactTests(unittest.TestCase):
             rl.collect_artifacts(V, None, None)
 
 
-class UploadOrderTests(unittest.TestCase):
-    def plan(self, tmp: Path, win=False):
+class ManifestBaseUrlTests(unittest.TestCase):
+    def staged(self, tmp: Path):
         found = rl.collect_artifacts(V, make_bundle(tmp), None)
-        staged = rl.stage_artifacts(V, found, tmp / "stage")
-        if win:
-            for n, c in (("Kiro-Gateway_0.0.2_x64-setup.exe", b"w"), ("Kiro-Gateway_0.0.2_x64-setup.exe.sig", b"s")):
-                (tmp / "stage" / n).write_bytes(c)
-            staged.update(win_setup=tmp / "stage/Kiro-Gateway_0.0.2_x64-setup.exe",
-                          win_setup_sig=tmp / "stage/Kiro-Gateway_0.0.2_x64-setup.exe.sig")
-        manifest = tmp / "latest.json"
-        manifest.write_text("{}")
-        return rl.build_plan(V, staged, manifest)
+        return rl.stage_artifacts(V, found, tmp / "stage")
 
-    def test_order_is_installer_then_package_then_sig_then_manifest_last(self):
+    def test_base_url_must_be_https_and_trailing_slash_is_tolerated(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d), win=True)
-            self.assertEqual([s.kind for s in plan], ["installer", "installer", "package", "sig", "sig", "manifest"])
-            self.assertEqual(plan[-1].key, "kiro-gateway/desktop/latest.json")
-            self.assertTrue(all(s.key.startswith(f"kiro-gateway/desktop/{V}/") for s in plan[:-1]))
-            self.assertIn("no-cache", plan[-1].cache_control)
+            staged = self.staged(Path(d))
+            for bad in ["", "http://github.com/x", "github.com/x", "ftp://x"]:
+                with self.assertRaises(rl.ReleaseError, msg=bad):
+                    rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged, bad)
+            m = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged, BASE + "///")
+            self.assertEqual(m["manualDownload"]["darwin"], f"{BASE}/Kiro-Gateway_{V}_universal.dmg")
 
-    def test_run_upload_heads_every_file_before_the_manifest(self):
+    def test_staged_names_are_space_free_and_are_exactly_what_the_manifest_points_at(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d))
-            events = []
-            rl.run_upload(plan, lambda s: events.append(("put", s.kind)),
-                          lambda u: (events.append(("head", u.rsplit("/", 1)[-1])) or (200, None)), lambda m: None)
-            kinds = [e[0] for e in events]
-            last_head = max(i for i, k in enumerate(kinds) if k == "head")
-            self.assertEqual(events[-1], ("put", "manifest"))
-            self.assertLess(last_head, len(events) - 1)
-            self.assertEqual(kinds.count("head"), len(plan) - 1)
+            tmp = Path(d)
+            found = rl.collect_artifacts(V, make_bundle(tmp), make_win_bundle(tmp))
+            assets = tmp / "assets"
+            staged = rl.stage_artifacts(V, found, assets)
+            m = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged, BASE)
+            names = {p.name for p in assets.iterdir()}
+            self.assertTrue(all(" " not in n for n in names), names)
+            self.assertEqual(rl.check_manifest_assets(m, assets, BASE), [])
+            urls = {e["url"] for e in m["platforms"].values()} | set(m["manualDownload"].values())
+            self.assertTrue({u.rsplit("/", 1)[1] for u in urls} <= names)
 
-    def test_head_failure_never_uploads_the_manifest(self):
+    def test_manifest_pointing_at_a_missing_or_foreign_file_is_reported(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d))
-            put = []
-            for status in (404, 0, 403):
-                put.clear()
-                with self.assertRaises(rl.ReleaseError):
-                    rl.run_upload(plan, lambda s: put.append(s.kind), lambda u: (status, None), lambda m: None)
-                self.assertNotIn("manifest", put)
+            tmp = Path(d)
+            staged = self.staged(tmp)
+            m = rl.build_manifest(V, "n", "2026-11-01T10:00:00+08:00", "0.0.1", staged, BASE)
+            (tmp / "stage" / "Kiro-Gateway.app.tar.gz").unlink()
+            self.assertTrue(rl.check_manifest_assets(m, tmp / "stage", BASE))
+            self.assertTrue(rl.check_manifest_assets(m, tmp / "stage", "https://example.com/other"))
+            m["manualDownload"]["darwin"] = BASE + "/has space.dmg"
+            self.assertTrue(any("has space" in p for p in rl.check_manifest_assets(m, tmp / "stage", BASE)))
 
-    def test_head_size_mismatch_never_uploads_the_manifest(self):
+
+class TagNotesTests(unittest.TestCase):
+    def test_plain_body_is_the_notes_and_not_forced(self):
+        self.assertEqual(rl.split_tag_notes("修复 A\n新增 B\n"), ("修复 A\n新增 B", False))
+
+    def test_marker_line_forces_and_is_removed(self):
+        self.assertEqual(rl.split_tag_notes("修复 A\n[force-upgrade]\n新增 B"), ("修复 A\n新增 B", True))
+        self.assertEqual(rl.split_tag_notes("[force-upgrade]\r\n修复 A\r\n"), ("修复 A", True))
+
+    def test_marker_inside_a_sentence_or_with_spaces_does_not_force(self):
+        for body in ["说明 [force-upgrade] 说明", " [force-upgrade]", "[force-upgrade] ", "[Force-Upgrade]"]:
+            notes, force = rl.split_tag_notes(body + "\n别的内容")
+            self.assertFalse(force, body)
+            self.assertIn("别的内容", notes)
+
+    def test_empty_notes_are_an_error_even_with_only_the_marker(self):
+        for body in ["", "  \n\n", "[force-upgrade]\n", "[force-upgrade]\n\n  \n"]:
+            with self.assertRaises(rl.ReleaseError, msg=repr(body)):
+                rl.split_tag_notes(body)
+
+
+class PreviousFloorTests(unittest.TestCase):
+    def test_reads_the_floor_of_a_previous_manifest(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d))
-            put = []
-            with self.assertRaises(rl.ReleaseError):
-                rl.run_upload(plan, lambda s: put.append(s.kind), lambda u: (200, 1), lambda m: None)
-            self.assertNotIn("manifest", put)
+            p = Path(d) / "prev.json"
+            p.write_text(json.dumps({"minRequiredVersion": "0.0.3"}))
+            self.assertEqual(rl.read_previous_min(p), "0.0.3")
 
-    def test_put_failure_stops_before_later_steps(self):
+    def test_missing_unreadable_or_invalid_floor_is_none(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d))
-            put = []
+            self.assertIsNone(rl.read_previous_min(None))
+            self.assertIsNone(rl.read_previous_min(Path(d) / "absent.json"))
+            for content in ["not json", "[]", "{}", '{"minRequiredVersion": 3}', '{"minRequiredVersion": "v1"}']:
+                p = Path(d) / "prev.json"
+                p.write_text(content)
+                self.assertIsNone(rl.read_previous_min(p), content)
 
-            def boom(step):
-                put.append(step.kind)
-                if len(put) == 2:
-                    raise OSError("network")
 
-            with self.assertRaises(OSError):
-                rl.run_upload(plan, boom, lambda u: (200, None), lambda m: None)
-            self.assertEqual(len(put), 2)
+class PrepareCliTests(unittest.TestCase):
+    """The CLI the workflow runs, end to end on a temp tree."""
 
-    def test_plan_without_manifest_last_is_refused(self):
+    def run_prepare(self, tmp: Path, *extra: str):
+        make_fake = make_bundle(tmp)
+        args = ["prepare", "--version", V, "--base-url", BASE, "--bundle-dir", str(make_fake),
+                "--windows-dir", str(make_win_bundle(tmp)), "--out", str(tmp / "out"), *extra]
+        r = subprocess.run([sys.executable, "-I", str(DESKTOP / "scripts/release_lib.py"), *args],
+                           capture_output=True, text=True)
+        return r, tmp / "out"
+
+    def test_writes_assets_manifest_and_notes_with_defaults_when_no_previous_manifest(self):
         with tempfile.TemporaryDirectory() as d:
-            plan = self.plan(Path(d))
-            with self.assertRaises(rl.ReleaseError):
-                rl.run_upload(list(reversed(plan)), lambda s: None, lambda u: (200, None), lambda m: None)
+            tmp = Path(d)
+            body = tmp / "body.txt"
+            body.write_text("修复 A\n")
+            r, out = self.run_prepare(tmp, "--tag-body", str(body))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("默认值 0.0.1", r.stdout)
+            m = json.loads((out / "assets/latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(m["minRequiredVersion"], "0.0.1")
+            self.assertEqual(m["notes"], "修复 A")
+            self.assertEqual((out / "notes.md").read_text(encoding="utf-8"), "修复 A\n")
+            self.assertEqual(sorted(p.name for p in (out / "assets").iterdir()), sorted([
+                "Kiro-Gateway.app.tar.gz", "Kiro-Gateway.app.tar.gz.sig", f"Kiro-Gateway_{V}_universal.dmg",
+                f"Kiro-Gateway_{V}_x64-setup.exe", f"Kiro-Gateway_{V}_x64-setup.exe.sig", "latest.json"]))
+            self.assertEqual(rl.validate_manifest(m), [])
 
-
-class CredentialTests(unittest.TestCase):
-    def test_env_wins_and_file_is_fallback(self):
+    def test_force_marker_sets_floor_to_this_version_and_stays_out_of_the_notes(self):
         with tempfile.TemporaryDirectory() as d:
-            home = Path(d)
-            (home / ".tccli").mkdir()
-            (home / ".tccli/default.credential").write_text('{"secretId":"fid","secretKey":"fkey"}')
-            self.assertEqual(rl.load_credentials({"COS_SECRET_ID": "eid", "COS_SECRET_KEY": "ekey"}, home), ("eid", "ekey"))
-            self.assertEqual(rl.load_credentials({}, home), ("fid", "fkey"))
-            self.assertEqual(rl.load_credentials({"COS_SECRET_ID": "eid"}, home), ("fid", "fkey"))
+            tmp = Path(d)
+            body = tmp / "body.txt"
+            body.write_text("修复 A\n[force-upgrade]\n")
+            r, out = self.run_prepare(tmp, "--tag-body", str(body))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            m = json.loads((out / "assets/latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(m["minRequiredVersion"], V)
+            self.assertNotIn("force-upgrade", m["notes"])
 
-    def test_missing_or_broken_credentials_raise_without_leaking(self):
+    def test_previous_floor_is_carried_over_and_a_broken_previous_file_falls_back(self):
         with tempfile.TemporaryDirectory() as d:
-            home = Path(d)
-            with self.assertRaises(rl.ReleaseError):
-                rl.load_credentials({}, home)
-            (home / ".tccli").mkdir()
-            (home / ".tccli/default.credential").write_text("not json SECRET-VALUE")
-            with self.assertRaises(rl.ReleaseError) as cm:
-                rl.load_credentials({}, home)
-            self.assertNotIn("SECRET-VALUE", str(cm.exception))
+            tmp = Path(d)
+            prev = tmp / "prev.json"
+            prev.write_text(json.dumps({"minRequiredVersion": "0.0.2"}))
+            r, out = self.run_prepare(tmp, "--notes", "说明", "--previous-manifest", str(prev))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads((out / "assets/latest.json").read_text())["minRequiredVersion"], "0.0.2")
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            prev = tmp / "prev.json"
+            prev.write_text("<html>")
+            r, out = self.run_prepare(tmp, "--notes", "说明", "--previous-manifest", str(prev))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads((out / "assets/latest.json").read_text())["minRequiredVersion"], "0.0.1")
+
+    def test_empty_notes_bad_base_url_and_missing_notes_fail_without_a_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            body = tmp / "body.txt"
+            body.write_text("[force-upgrade]\n")
+            r, out = self.run_prepare(tmp, "--tag-body", str(body))
+            self.assertEqual(r.returncode, 2)
+            self.assertFalse((out / "assets/latest.json").exists())
+        with tempfile.TemporaryDirectory() as d:
+            r, out = self.run_prepare(Path(d))
+            self.assertEqual(r.returncode, 2)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            r = subprocess.run([sys.executable, "-I", str(DESKTOP / "scripts/release_lib.py"), "prepare", "--version", V,
+                                "--base-url", "http://insecure.example", "--notes", "n",
+                                "--bundle-dir", str(make_bundle(tmp)), "--out", str(tmp / "o")],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertFalse((tmp / "o/assets/latest.json").exists())
+
+    def test_stale_build_outputs_of_another_version_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            r = subprocess.run([sys.executable, "-I", str(DESKTOP / "scripts/release_lib.py"), "prepare", "--version", "0.0.3",
+                                "--base-url", BASE, "--notes", "n", "--bundle-dir", str(make_bundle(tmp, version="0.0.2")),
+                                "--out", str(tmp / "o")], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2)
+
+
+class NoCosLeftoversTests(unittest.TestCase):
+    def test_release_lib_has_no_tencent_cos_code(self):
+        text = (DESKTOP / "scripts/release_lib.py").read_text(encoding="utf-8")
+        for needle in ("qcloud_cos", "myqcloud", "tccli", "COS_SECRET"):
+            self.assertNotIn(needle, text)
+
+    def test_removed_cos_scripts_stay_removed(self):
+        for name in ("release.sh", "publish-from-github.sh"):
+            self.assertFalse((DESKTOP / "scripts" / name).exists(), name)
+
+
+class WorkflowTests(unittest.TestCase):
+    """Guards the release job's wiring (text checks; the YAML is parsed separately in CI/verification)."""
+
+    TEXT = (DESKTOP.parent / ".github/workflows/desktop-release.yml").read_text(encoding="utf-8")
+
+    def test_manifest_urls_use_the_running_repository_not_a_hardcoded_one(self):
+        self.assertIn("https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}", self.TEXT)
+        self.assertNotIn("heyuan110", self.TEXT)
+
+    def test_tag_object_is_fetched_with_full_history(self):
+        self.assertIn("fetch-depth: 0", self.TEXT)
+        self.assertIn("+refs/tags/${TAG}:refs/tags/${TAG}", self.TEXT)
+
+    def test_only_staged_assets_are_uploaded_and_cos_is_gone(self):
+        self.assertIn("files: release-out/assets/*", self.TEXT)
+        self.assertNotIn("artifacts/**", self.TEXT)
+        for needle in ("COS", "myqcloud", "qcloud"):
+            self.assertNotIn(needle, self.TEXT)
+
+    def test_artifacts_keep_their_per_platform_directories(self):
+        self.assertNotIn("merge-multiple", self.TEXT)
+        self.assertIn("artifacts/bundles-macOS/universal-apple-darwin/release/bundle", self.TEXT)
+        self.assertIn("artifacts/bundles-Windows/release/bundle", self.TEXT)
 
 
 class UpdaterKeyTests(unittest.TestCase):
@@ -306,296 +421,14 @@ class UpdaterKeyTests(unittest.TestCase):
             self.fail(f"private key file inside desktop/: {path}")
 
 
-class SigningEnvironmentTests(unittest.TestCase):
-    """The Tauri 2 CLI reads TAURI_SIGNING_PRIVATE_KEY; the *_PATH spelling is ignored."""
-
-    def test_release_script_exports_the_variable_tauri_reads(self):
-        text = (DESKTOP / "scripts/release.sh").read_text()
-        exports = [l.strip() for l in text.splitlines() if l.strip().startswith("export TAURI_SIGNING")]
-        self.assertTrue(any(l.startswith("export TAURI_SIGNING_PRIVATE_KEY=") for l in exports), exports)
-        self.assertFalse(any(l.startswith("export TAURI_SIGNING_PRIVATE_KEY_PATH=") for l in exports), exports)
-
-    def test_missing_signature_hint_names_the_right_variable(self):
-        text = (DESKTOP / "scripts/release_lib.py").read_text()
-        self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY_PATH", text)
 
 
-def write_sidecar(resources: Path, arch: str, cpu=None) -> Path:
-    """A fake `kiro-gateway` with a thin 64-bit Mach-O header for `arch` (or an explicit cpu type)."""
-    exe = resources / f"gateway-{arch}" / "kiro-gateway"
-    exe.parent.mkdir(parents=True, exist_ok=True)
-    cpu = rl._MACHO_CPU[arch] if cpu is None else cpu
-    exe.write_bytes(rl._MACHO_MAGIC_64.to_bytes(4, "little") + cpu.to_bytes(4, "little") + b"\0" * 16)
-    return exe
+class TestWorkflowKeepsTheForcedFloor(unittest.TestCase):
+    """A failed fetch of the previous manifest must not lower minRequiredVersion."""
 
-
-class CheckSidecarsTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.res = Path(self._tmp.name)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_both_architectures_in_place_is_clean(self):
-        write_sidecar(self.res, "aarch64")
-        write_sidecar(self.res, "x86_64")
-        self.assertEqual(rl.check_sidecars(self.res), [])
-
-    def test_missing_architecture_names_the_build_command(self):
-        write_sidecar(self.res, "aarch64")
-        (self.res / "gateway-x86_64").mkdir()
-        (self.res / "gateway-x86_64/.gitkeep").touch()
-        problems = rl.check_sidecars(self.res)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("x86_64", problems[0])
-        self.assertIn("build-sidecar.sh --arch x86_64", problems[0])
-
-    def test_nothing_built_reports_both(self):
-        self.assertEqual(len(rl.check_sidecars(self.res)), 2)
-
-    def test_arm64_binary_in_the_x86_64_directory_is_rejected(self):
-        write_sidecar(self.res, "aarch64")
-        write_sidecar(self.res, "x86_64", cpu=rl._MACHO_CPU["aarch64"])
-        problems = rl.check_sidecars(self.res)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("gateway-x86_64", problems[0])
-
-    def test_non_macho_file_is_rejected(self):
-        write_sidecar(self.res, "aarch64")
-        exe = write_sidecar(self.res, "x86_64")
-        exe.write_text("#!/bin/sh\n")
-        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
-
-    def test_truncated_file_is_rejected_not_crashed_on(self):
-        write_sidecar(self.res, "aarch64")
-        write_sidecar(self.res, "x86_64").write_bytes(b"\xcf\xfa")
-        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
-
-    def test_fat_binary_is_rejected(self):
-        write_sidecar(self.res, "aarch64")
-        write_sidecar(self.res, "x86_64").write_bytes(b"\xca\xfe\xba\xbe" + b"\0" * 20)
-        self.assertEqual(len(rl.check_sidecars(self.res)), 1)
-
-    def test_legacy_single_gateway_dir_does_not_count(self):
-        legacy = self.res / "gateway" / "kiro-gateway"
-        legacy.parent.mkdir()
-        legacy.write_bytes(b"\xcf\xfa\xed\xfe" + (0x0100000C).to_bytes(4, "little"))
-        self.assertEqual(len(rl.check_sidecars(self.res)), 2)
-
-
-class DryRunScriptTests(unittest.TestCase):
-    """release.sh --dry-run end to end: fake build, real manifest, no upload."""
-
-    def run_script(self, *args, stdin=""):
-        env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": tempfile.mkdtemp(), "RELEASE_STAGING": self.staging}
-        return subprocess.run(["bash", str(DESKTOP / "scripts/release.sh"), *args], input=stdin,
-                              capture_output=True, text=True, env=env, timeout=60)
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.staging = self._tmp.name
-        self.before = rl.read_versions(DESKTOP)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-        self.assertEqual(rl.read_versions(DESKTOP), self.before, "dry-run must not modify versions")
-
-    def test_dry_run_prints_plan_and_writes_valid_manifest(self):
-        r = self.run_script("VERSION=0.9.9", "NOTES=第一条\n第二条", "--dry-run")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("上传顺序", r.stdout)
-        self.assertIn("kiro-gateway/desktop/latest.json", r.stdout)
-        manifest = json.loads(Path(self.staging, "out/latest.json").read_text())
-        self.assertEqual(rl.validate_manifest(manifest), [])
-        self.assertEqual(manifest["version"], "0.9.9")
-        self.assertEqual(manifest["minRequiredVersion"], "0.0.1")
-        self.assertEqual(manifest["notes"], "第一条\n第二条")
-        self.assertTrue(r.stdout.index("[installer]") < r.stdout.index("[package]") < r.stdout.index("[sig]") < r.stdout.index("[manifest]"))
-
-    def test_force_requires_retyping_the_version(self):
-        r = self.run_script("VERSION=0.9.9", "NOTES=n", "FORCE=1", "--dry-run", stdin="0.9.8\n")
-        self.assertEqual(r.returncode, 1)
-        self.assertFalse(Path(self.staging, "out/latest.json").exists())
-        r = self.run_script("VERSION=0.9.9", "NOTES=n", "FORCE=1", "--dry-run", stdin="0.9.9\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        manifest = json.loads(Path(self.staging, "out/latest.json").read_text())
-        self.assertEqual(manifest["minRequiredVersion"], "0.9.9")
-
-    def test_bad_arguments_fail_before_anything_happens(self):
-        for args in (["NOTES=n", "--dry-run"], ["VERSION=0.9.9", "--dry-run"], ["VERSION=0.0.1", "NOTES=n", "--dry-run"],
-                     ["VERSION=abc", "NOTES=n", "--dry-run"], ["VERSION=0.9.9", "NOTES=n", "FORCE=2", "--dry-run"], ["--bogus"]):
-            r = self.run_script(*args)
-            self.assertNotEqual(r.returncode, 0, args)
-        self.assertFalse(Path(self.staging, "out").exists())
-
-    def test_notes_can_come_from_a_file(self):
-        notes = Path(self.staging, "notes.md")
-        notes.write_text("- fix a\n- fix b\n", encoding="utf-8")
-        r = self.run_script("VERSION=0.9.9", f"NOTES={notes}", "--dry-run")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(json.loads(Path(self.staging, "out/latest.json").read_text())["notes"], "- fix a\n- fix b")
-
-    def test_output_never_contains_credentials(self):
-        r = self.run_script("VERSION=0.9.9", "NOTES=n", "--dry-run")
-        text = r.stdout + r.stderr
-        for secret in ("AKID", "secretKey", "secretId"):
-            self.assertNotIn(secret, text)
-
-
-class RollbackAndPublishedFloorTests(unittest.TestCase):
-    def test_restore_puts_back_every_version_file_byte_for_byte(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = make_root(Path(d) / "desktop")
-            originals = {rel: (root / rel).read_bytes() for rel in rl.VERSION_FILES}
-            snap = Path(d) / "snap"
-            self.assertEqual(sorted(rl.snapshot_version_files(root, snap)), sorted(rl.VERSION_FILES))
-            rl.bump_versions(root, "0.0.2")
-            self.assertNotEqual((root / "package.json").read_bytes(), originals["package.json"])
-            rl.restore_version_files(root, snap)
-            for rel, data in originals.items():
-                self.assertEqual((root / rel).read_bytes(), data, rel)
-            self.assertEqual(set(rl.read_versions(root).values()), {"0.0.1"})
-
-    def test_restore_removes_a_half_written_temp_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = make_root(Path(d) / "desktop", lock=False)
-            snap = Path(d) / "snap"
-            self.assertEqual(len(rl.snapshot_version_files(root, snap)), 3)
-            (root / "package.json.release-tmp").write_text("half")
-            rl.restore_version_files(root, snap)
-            self.assertFalse((root / "package.json.release-tmp").exists())
-
-    def test_non_force_release_aborts_when_the_live_manifest_cannot_be_read(self):
-        with self.assertRaises(rl.ReleaseError) as ctx:
-            rl.previous_min_for_release("http://x/latest.json", False, False, fetch=lambda url: None)
-        self.assertIn("无法读取线上 latest.json", str(ctx.exception))
-        self.assertIn("FIRST_RELEASE=1", str(ctx.exception))
-
-    def test_first_release_and_force_skip_the_lookup(self):
-        def boom(url):
-            raise AssertionError("must not fetch")
-        self.assertIsNone(rl.previous_min_for_release("u", False, True, fetch=boom))
-        self.assertIsNone(rl.previous_min_for_release("u", True, False, fetch=boom))
-
-    def test_readable_manifest_returns_its_floor(self):
-        self.assertEqual(rl.previous_min_for_release("u", False, False, fetch=lambda url: "0.0.3"), "0.0.3")
-
-    def test_unreachable_url_is_unreadable(self):
-        self.assertIsNone(rl.fetch_previous_min("http://127.0.0.1:1/latest.json", timeout=1.0))
-
-
-class RealReleaseScriptTests(unittest.TestCase):
-    """release.sh without --dry-run against a throw-away copy of the tree, with a fake pnpm."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
-        self.desktop = make_root(base / "desktop")
-        (self.desktop / "scripts").mkdir()
-        for name in ("release.sh", "release_lib.py"):
-            (self.desktop / "scripts" / name).write_bytes((DESKTOP / "scripts" / name).read_bytes())
-        self.bin = base / "bin"
-        self.bin.mkdir()
-        self.key = base / "key"
-        self.key.write_text("not a real key")
-        self.home = base / "home"
-        self.home.mkdir()
-        self.originals = {rel: (self.desktop / rel).read_bytes() for rel in rl.VERSION_FILES}
-        self.resources = self.desktop / "src-tauri/resources"
-        write_sidecar(self.resources, "aarch64")
-        write_sidecar(self.resources, "x86_64")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def fake_pnpm(self, body):
-        path = self.bin / "pnpm"
-        path.write_text("#!/bin/bash\n" + body + "\n")
-        path.chmod(0o755)
-
-    def run_release(self, *args, manifest_url="http://127.0.0.1:1/latest.json", stdin=""):
-        env = {
-            "PATH": f"{self.bin}:/usr/bin:/bin:/usr/local/bin",
-            "HOME": str(self.home),
-            "TMPDIR": self._tmp.name,
-            "TAURI_SIGNING_PRIVATE_KEY_PATH": str(self.key),
-            "RELEASE_MANIFEST_URL": manifest_url,
-        }
-        return subprocess.run(["bash", str(self.desktop / "scripts/release.sh"), *args], capture_output=True, text=True,
-                              input=stdin, env=env, timeout=120)
-
-    def assert_versions_untouched(self):
-        for rel, data in self.originals.items():
-            self.assertEqual((self.desktop / rel).read_bytes(), data, rel)
-
-    def test_build_failure_restores_the_version_files_and_a_rerun_is_accepted(self):
-        self.fake_pnpm("echo build exploded >&2; exit 1")
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("恢复版本号文件", r.stderr)
-        self.assert_versions_untouched()
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertNotIn("必须高于当前版本", r.stderr)
-        self.assertIn("build exploded", r.stderr)
-        self.assert_versions_untouched()
-
-    def test_interrupt_during_the_build_restores_too(self):
-        self.fake_pnpm("kill -TERM $PPID; sleep 5")
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertNotEqual(r.returncode, 0)
-        self.assert_versions_untouched()
-
-    def test_unreadable_live_manifest_aborts_before_anything_is_written(self):
-        self.fake_pnpm("echo must not build >&2; exit 1")
-        r = self.run_release("VERSION=0.0.2", "NOTES=n")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("无法读取线上 latest.json，为避免降低最低可用版本已中止；确认是首次发布请加 FIRST_RELEASE=1", r.stderr)
-        self.assertNotIn("must not build", r.stderr)
-        self.assert_versions_untouched()
-
-    def test_unreadable_live_manifest_does_not_stop_a_forced_release(self):
-        self.fake_pnpm("echo build reached >&2; exit 1")
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FORCE=1", stdin="0.0.2\n")
-        self.assertNotIn("无法读取线上 latest.json", r.stderr)
-        self.assertIn("build reached", r.stderr)
-        self.assert_versions_untouched()
-
-    def test_missing_sidecar_aborts_before_versions_or_build_are_touched(self):
-        self.fake_pnpm("echo must not build >&2; exit 1")
-        (self.resources / "gateway-x86_64/kiro-gateway").unlink()
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("缺少 x86_64 的 sidecar", r.stderr)
-        self.assertIn("build-sidecar.sh --arch x86_64", r.stderr)
-        self.assertNotIn("must not build", r.stderr)
-        self.assertNotIn("恢复版本号文件", r.stderr, "nothing was bumped, so nothing to roll back")
-        self.assert_versions_untouched()
-
-    def test_wrong_architecture_sidecar_aborts_too(self):
-        self.fake_pnpm("echo must not build >&2; exit 1")
-        write_sidecar(self.resources, "aarch64", cpu=rl._MACHO_CPU["x86_64"])
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("不是 aarch64 的 Mach-O", r.stderr)
-        self.assert_versions_untouched()
-
-    def test_skip_build_does_not_need_sidecars(self):
-        (self.resources / "gateway-x86_64/kiro-gateway").unlink()
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1", "--skip-build")
-        self.assertNotIn("缺少 x86_64 的 sidecar", r.stderr)
-        self.assert_versions_untouched()
-
-    def test_build_command_is_the_universal_one(self):
-        self.fake_pnpm('echo "PNPM_ARGS=$*" >&2; exit 1')
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=1")
-        self.assertIn("tauri build --target universal-apple-darwin --bundles app,dmg", r.stderr)
-
-    def test_bad_first_release_value_is_rejected(self):
-        r = self.run_release("VERSION=0.0.2", "NOTES=n", "FIRST_RELEASE=2")
-        self.assertEqual(r.returncode, 2)
-        self.assert_versions_untouched()
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_previous_manifest_failure_aborts_unless_first_release(self):
+        text = (Path(__file__).resolve().parents[2] / ".github/workflows/desktop-release.yml").read_text(encoding="utf-8")
+        step = text[text.index("- name: Previous latest.json"):text.index("- name: Build latest.json")]
+        self.assertIn('if [ "$count" = "0" ]', step)
+        self.assertIn("exit 1", step)
+        self.assertNotIn("::warning::", step)

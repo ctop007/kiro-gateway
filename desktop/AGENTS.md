@@ -73,7 +73,7 @@
 
 - macOS：每个架构一个目录，`Contents/Resources/gateway-aarch64/` 与 `gateway-x86_64/`。`sidecar.rs` 按 `std::env::consts::ARCH`（App 实际运行的架构，Rosetta 下是 `x86_64`）选目录；`KIRO_GATEWAY_SIDECAR` 覆盖仍然最优先。包里没有当前架构的目录时报“这个安装包里没有适用于当前 CPU 的网关程序”，目录在但没有可执行文件时仍报“重新安装”。
 - Windows：仍是单个 `gateway/`（`tauri.conf.json` 基础配置）。
-- 打进哪些目录由配置决定：`tauri.conf.json` 只列 `resources/gateway/`（Windows）；`tauri.macos.conf.json`（macOS 主机自动合并，JSON merge patch）把它置 `null`，换成两个架构目录。所以 macOS 默认是 universal 布局，两个目录都必须存在（`.gitkeep` 保证目录在，但空目录会打出起不来的包，所以 `release.sh` 和 `make dmg-universal` 先检查两个 `kiro-gateway` 可执行文件在位；`release.sh` 还校验 Mach-O 的 CPU 类型）。单架构构建用 `--config '{"bundle":{"resources":{"resources/gateway-<另一个>/":null}}}'`，`make dmg-local` 已经这样做。
+- 打进哪些目录由配置决定：`tauri.conf.json` 只列 `resources/gateway/`（Windows）；`tauri.macos.conf.json`（macOS 主机自动合并，JSON merge patch）把它置 `null`，换成两个架构目录。所以 macOS 默认是 universal 布局，两个目录都必须存在（`.gitkeep` 保证目录在，但空目录会打出起不来的包，所以出 universal 包前要先 `make sidecar-universal`；CI 里两个架构的 sidecar 都是先构建再出包）。单架构构建用 `--config '{"bundle":{"resources":{"resources/gateway-<另一个>/":null}}}'`，`make dmg-local` 已经这样做。
 - `make clean`：清理 dist 和 dmg 残留。
 
 ## 测试要求
@@ -105,19 +105,21 @@
 
 ## 发版
 
-发布物放腾讯云 COS（桶 `tools-1254376798`，`ap-guangzhou`），应用内升级读 `kiro-gateway/desktop/latest.json`。
+安装包和应用内升级用的 `latest.json` 都放 GitHub Releases（仓库 `heyuan110/kiro-gateway`）。App 读 `https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json`，地址只在 `tauri.conf.json` 的 `plugins.updater.endpoints` 里写一次。
 
 ```bash
-# 在仓库任意位置运行；NOTES 可以是文件路径或一行文字（一行一条）
-desktop/scripts/release.sh VERSION=0.0.2 NOTES=notes.md            # 普通更新：静默下载，下次启动生效
-desktop/scripts/release.sh VERSION=0.0.3 NOTES=notes.md FORCE=1    # 强制升级：低于 0.0.3 的旧版必须升级
-desktop/scripts/release.sh VERSION=0.0.2 NOTES=notes.md --dry-run  # 只生成清单并打印上传计划，不改版本、不上传
+# 1. 改三处版本号（package.json、src-tauri/tauri.conf.json、src-tauri/Cargo.toml，Cargo.lock 里本包条目同步），提交
+/opt/miniconda3/bin/python -I desktop/scripts/release_lib.py bump --root desktop --version 0.0.2
+# 2. 打 annotated tag：正文就是更新说明（一行一条）
+git tag -a desktop-v0.0.2 -F notes.md
+# 3. 推 tag，GitHub 自动出包、生成 latest.json、发布 Release
+git push internal desktop-v0.0.2
 ```
 
-- 脚本做的事：检查 `VERSION` 是 `x.y.z` 且高于当前版本 → 改 `package.json`、`tauri.conf.json`、`Cargo.toml`（及 `Cargo.lock` 里本包条目）→ 先检查 `gateway-aarch64/`、`gateway-x86_64/` 两个 sidecar 都在且 CPU 架构对（缺则在改任何文件前中止，提示先 `make sidecar-universal`）→ `pnpm tauri build --target universal-apple-darwin --bundles app,dmg`（带 updater artifacts，用私钥签名）→ 生成 `latest.json` → 上传。`--skip-build` 复用已有产物；`--dry-run` 没有产物时用占位文件，所以 dry-run 的清单签名是占位值，不能拿去上传。
-- 上传顺序固定：安装包（dmg）→ 更新包 `Kiro-Gateway.app.tar.gz` → `.sig` → 对每个文件 HEAD 校验（状态 200，且大小与本地一致）→ 最后才覆盖 `latest.json`（`Cache-Control: no-cache`）。任一步失败，清单都不会被改。
-- `latest.json` 的 `minRequiredVersion`：普通发布沿用线上清单的值（线上读不到时用 `0.0.1`），所以前一次的强制升级不会被悄悄解除；`FORCE=1` 设为本次版本，并要求把版本号再输入一遍。回滚的办法是发一个版本号更高的修复版，updater 不支持降级。
-- 清单里 `manualDownload.darwin` / `.windows` 是 dmg / setup.exe 直链，强制升级下载失败时界面显示它。macOS 的 `darwin-aarch64` 与 `darwin-x86_64` 指向同一个 universal 更新包。Windows 包要在 Windows 上出，把 NSIS 的 `bundle` 目录放到 `WINDOWS_BUNDLE_DIR` 再运行，清单才会带 `windows-x86_64`。
-- 签名私钥：`~/.kiro-gateway/desktop-updater.key`（无密码，权限 600，`*.key` 已被忽略，绝不进仓库），公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`。私钥丢了，旧版就收不到之后的更新；重新生成要换公钥并让用户手动装一次。
-- COS 凭证读 `COS_SECRET_ID` / `COS_SECRET_KEY`，没有就读 `~/.tccli/default.credential`；脚本不打印它们。上传用 `/opt/miniconda3/bin/python -I` 调 `qcloud_cos`（可用 `RELEASE_PYTHON` 换解释器）。
-- 脚本逻辑在 `scripts/release_lib.py`，测试：`/opt/miniconda3/bin/python -I -m unittest discover -s desktop/scripts -p 'test_release_lib.py' -v`（不联网）。
+- 强制升级：在 `notes.md` 里单独写一行 `[force-upgrade]`，`minRequiredVersion` 就是本次版本，低于它的旧版必须升级；这一行不会出现在更新说明里。没有这一行时，`minRequiredVersion` 沿用上一个已发布 Release 的 `latest.json`（前一次的强制升级不会被悄悄解除），取不到（第一次发布）用 `0.0.1`，日志里会写明。回滚的办法是发一个版本号更高的修复版，updater 不支持降级。
+- Actions（`.github/workflows/desktop-release.yml`）：macOS universal 出 dmg + 签名更新包，Windows 出 NSIS 安装器 + 签名；release job 用 `scripts/release_lib.py prepare` 把它们改成不含空格的名字（`Kiro-Gateway_<版本>_universal.dmg`、`Kiro-Gateway.app.tar.gz`、`Kiro-Gateway_<版本>_x64-setup.exe` 及各自的 `.sig`），生成 `latest.json`（URL 是 `https://github.com/<仓库>/releases/download/<tag>/<文件名>`），把这些文件原样挂到 Release，更新说明也取自 tag 正文。手动 `workflow_dispatch` 只出包不发布。
+- `latest.json` 里 `manualDownload.darwin` / `.windows` 是 dmg / setup.exe 直链，强制升级下载失败时界面显示它。macOS 的 `darwin-aarch64` 与 `darwin-x86_64` 指向同一个 universal 更新包。
+- 仓库私有期间，App 取不到清单（未登录访问私有仓库资产返回 404），检查更新会静默失败，不影响使用；仓库公开后生效。
+- 签名私钥：`~/.kiro-gateway/desktop-updater.key`（无密码，权限 600，`*.key` 已被忽略，绝不进仓库）；Actions 用的是 Secret `TAURI_SIGNING_PRIVATE_KEY`。公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`。私钥丢了，旧版就收不到之后的更新；重新生成要换公钥并让用户手动装一次。
+- 本机试跑清单生成：`release_lib.py prepare --version X --base-url https://github.com/<仓库>/releases/download/desktop-vX --tag-body body.txt --bundle-dir <mac bundle> --windows-dir <win bundle> --out <目录> [--previous-manifest 上一个 latest.json]`，上传用的文件在 `<目录>/assets/`。
+- 脚本逻辑在 `scripts/release_lib.py`（只用标准库），测试：`/opt/miniconda3/bin/python -I -m unittest discover -s desktop/scripts -p 'test_release_lib.py' -v`（不联网）。

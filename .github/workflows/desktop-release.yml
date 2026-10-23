@@ -2,8 +2,9 @@
 # 触发：
 #   - push tag `desktop-v*`：出包并挂到 GitHub Release（tag 名就是 Release 名）
 #   - 手动 workflow_dispatch：只出包、上传 artifact，不建 Release（用来试跑）
-# 发布到腾讯云 COS 不在这里做：本机 desktop/scripts/release.sh 从 Release 拉包、生成
-# latest.json 再上传，COS 凭证不进 GitHub。签名私钥在 Secret TAURI_SIGNING_PRIVATE_KEY。
+# Release 里除了安装包和 .sig，还有 latest.json（应用内升级读它，地址见
+# desktop/src-tauri/tauri.conf.json 的 plugins.updater.endpoints）。更新说明取 annotated tag 正文，
+# 正文里单独一行 [force-upgrade] 表示强制升级。签名私钥在 Secret TAURI_SIGNING_PRIVATE_KEY。
 name: Desktop Release
 
 on:
@@ -125,21 +126,69 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 不合并：保持 bundles-macOS/、bundles-Windows/ 两个目录，release_lib 按这个布局找文件
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
+          pattern: bundles-*
 
       - run: find artifacts -type f
 
+      # checkout 把 annotated tag 变成指向提交的引用，重新取 tag 对象才读得到正文
+      - name: Release notes from the tag
+        run: |
+          set -euo pipefail
+          git fetch --force origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
+            echo "::error::${TAG} 不是 annotated tag（用 git tag -a ${TAG} -F notes.md 打）"
+            exit 1
+          fi
+          body="$(git tag -l --format='%(contents:body)' "${TAG}")"
+          [ -n "$body" ] || body="$(git tag -l --format='%(contents:subject)' "${TAG}")"
+          printf '%s\n' "$body" > tag-body.txt
+
+      # 上一个已发布 Release（不含草稿和预发布）的 latest.json，用来沿用 minRequiredVersion。
+      # 一个 Release 都没有（第一次发布）才用默认值 0.0.1；已经发过却取不到清单就让发布失败，
+      # 否则会悄悄把强制升级的下限降回 0.0.1。
+      - name: Previous latest.json
+        run: |
+          set -euo pipefail
+          count="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName -q 'length')"
+          if [ "$count" = "0" ]; then
+            echo "第一次发布：没有上一个 Release，minRequiredVersion 用默认值"
+          elif gh release download --repo "$GITHUB_REPOSITORY" --pattern latest.json --output previous-latest.json --clobber; then
+            echo "取到上一个 Release 的 latest.json"
+          else
+            echo "::error::已经发过 Release，但取不到上一个 latest.json；为避免降低强制升级的下限，本次发布中止。检查上一个 Release 是否带 latest.json。"
+            exit 1
+          fi
+
+      - name: Build latest.json
+        run: |
+          set -euo pipefail
+          args=(prepare --version "${TAG#desktop-v}"
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+            --tag-body tag-body.txt
+            --bundle-dir artifacts/bundles-macOS/universal-apple-darwin/release/bundle
+            --windows-dir artifacts/bundles-Windows/release/bundle
+            --out release-out)
+          [ -f previous-latest.json ] && args+=(--previous-manifest previous-latest.json)
+          python3 -I desktop/scripts/release_lib.py "${args[@]}"
+          python3 -I desktop/scripts/release_lib.py verify-manifest release-out/assets/latest.json
+          cat release-out/assets/latest.json
+
+      # 上传的就是 release-out/assets 里的文件（不含空格的名字）+ latest.json
       - uses: softprops/action-gh-release@v2
         with:
           name: Kiro Gateway 桌面端 ${{ github.ref_name }}
-          generate_release_notes: true
-          files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.exe
-            artifacts/**/*.app.tar.gz
-            artifacts/**/*.sig
+          body_path: release-out/notes.md
+          files: release-out/assets/*
           fail_on_unmatched_files: true

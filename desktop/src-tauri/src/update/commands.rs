@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn debug_builds_refuse_remote_hosts_and_junk() {
         for value in [
-            "https://tools-1254376798.cos.ap-guangzhou.myqcloud.com/kiro-gateway/desktop/latest.json",
+            "https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json",
             "http://192.168.1.5:8123/latest.json",
             "http://0.0.0.0:8123/latest.json",
             "http://127.0.0.1.evil.example/latest.json",

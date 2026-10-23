@@ -241,12 +241,12 @@ App 启动时会在 `~/.zshrc`（bash 用户是 `~/.bashrc` / `~/.bash_profile`�
 
 ### 升级
 
-升级包放在腾讯云 COS，App 启动时和之后每 60 分钟读一次 `latest.json`：
+升级包放在 GitHub Releases，App 启动时和之后每 60 分钟读一次 `latest.json`：
 
 - 普通更新：静默下载并校验签名，下次启动 App 时自动安装；也可以在状态栏或托盘点「重启以完成更新」。
 - 强制升级（清单里 `minRequiredVersion` 高于当前版本）：停网关，显示无法关闭的升级遮罩；期间开关和托盘启动项不可用，`kclaude` 提示「需要升级」并以非零状态退出。下载失败时遮罩上有重试和安装包直链。
 
-发版用 `desktop/scripts/release.sh`（流程、签名私钥位置、`--dry-run` 见 `desktop/AGENTS.md` 的「发版」一节）。
+发版流程（改版本号、打 tag、GitHub 自动出包并发布）见 `desktop/AGENTS.md` 的「发版」一节。
 
 ### 排查
 

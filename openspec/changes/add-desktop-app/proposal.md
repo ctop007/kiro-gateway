@@ -12,7 +12,7 @@
 - **kclaude 命令**：App 启动时检查 `kclaude` 是否已安装，没有就自动装上。macOS 往 `~/.zshrc` 加一段带标记的 source，Windows 往 PowerShell profile 里加。只新增 `kclaude`，不改 `claude` 本身，也不改 Claude Code 的任何配置文件。
 - **环境检测**：自动检查 kiro-cli 是否安装、是否已登录、登录是否还有效，以及 Claude Code 是否安装。哪一项没通过，就给出一句能照着做的修复提示；检测不通过时开关不能打开。
 - **请求日志页**：每次请求一行，显示时间、接口、模型、成功或失败、耗时、credits；顶部显示今日和本月的 credits 合计。只记元数据，不记对话内容。
-- **应用内升级**：版本从 0.0.1 起。安装包和版本清单 JSON 放在腾讯云 COS。App 启动时和每 60 分钟检查一次清单，有新版就后台静默下载，下次启动时生效；清单可以声明最低可用版本，低于它的旧版必须先升级，不升级无法使用。
+- **应用内升级**：版本从 0.0.1 起。安装包和版本清单 JSON 放在 GitHub Releases。App 启动时和每 60 分钟检查一次清单，有新版就后台静默下载，下次启动时生效；清单可以声明最低可用版本，低于它的旧版必须先升级，不升级无法使用。
 - **网关新增结构化请求日志**（可选开启，默认关闭）：每个 `/v1/chat/completions`、`/v1/messages` 请求结束时写一行 JSONL，内容包括时间、接口、模型、是否流式、状态码、耗时、credits、错误摘要。四条路径都要覆盖：OpenAI / Anthropic × 流式 / 非流式。桌面端开启它并读取。网关直接运行（不经过桌面端）时行为不变。
 
 ## Capabilities
@@ -24,7 +24,7 @@
 - `desktop/environment-check`：桌面端对 kiro-cli 安装、登录及登录有效性和 Claude Code 安装的检测与修复提示。
 - `desktop/kclaude-command`：桌面端安装、检测和更新 `kclaude` 命令（macOS zsh、Windows PowerShell），且不影响现有 `claude`。
 - `desktop/request-log-viewer`：桌面端请求日志页，含每次请求的 credits 以及今日、本月合计。
-- `desktop/app-update`：桌面端版本号（从 0.0.1 起）、启动时和每 60 分钟检查 COS 上的版本清单、静默下载下次启动生效、按清单强制升级。
+- `desktop/app-update`：桌面端版本号（从 0.0.1 起）、启动时和每 60 分钟检查 GitHub Releases 上的版本清单、静默下载下次启动生效、按清单强制升级。
 
 ### Modified Capabilities
 

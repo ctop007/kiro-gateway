@@ -193,6 +193,13 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 - 发布：用 `desktop/scripts/release.sh VERSION=x.y.z NOTES=notes.md [FORCE=1]` 出包、签名、上传 COS，最后才覆盖 `latest.json`。上传顺序保证清单永远不会指向还没传完的文件。`FORCE=1` 时把 `minRequiredVersion` 设为本次版本。上传用 `coscli`，凭证从本机配置或环境变量读取，不进仓库。
 - 被否决的方案：自建后端发布通道。这个项目没有后端，COS 静态文件已经够用，而且 Tauri updater 原生就支持 static JSON。
 
+**2026-10-23 改为 GitHub Releases**
+
+- 原因：用户决定应用内升级不再用腾讯云 COS，安装包和 `latest.json` 都放 GitHub Releases（仓库 `heyuan110/kiro-gateway`，将来会公开）。
+- 做法：`tauri.conf.json` 的 updater endpoint 是 `https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json`（全仓库只此一处）。推 `desktop-v*` annotated tag 后，GitHub Actions 出包，并在 release job 里用 `release_lib.py prepare --base-url https://github.com/<repo>/releases/download/<tag>` 生成 `latest.json`，和不含空格的安装包、更新包、`.sig` 一起挂到 Release。更新说明取 tag 正文；正文里单独一行 `[force-upgrade]` 时 `minRequiredVersion` = 本次版本（标记行不进说明），否则沿用上一个已发布 Release 的 `latest.json`，取不到（第一次发布）用 `0.0.1`。本机的 `release.sh`、`publish-from-github.sh` 与 COS 上传代码已删除。
+- 与上文的差异：上文「COS」「上传顺序 / HEAD 校验」「`coscli`」「`release.sh`」不再适用；Release 由 action 一次性创建，清单和文件同属一个 Release，不存在清单先于文件的窗口。清单格式、`decide_update`、签名、强制升级逻辑不变。
+- 影响：仓库私有期间，App 取不到清单（私有仓库的资产地址未登录会 404），检查更新会静默失败，不影响使用；仓库公开后自动生效。已安装的旧版仍指向 COS 地址的，不会收到之后的更新，需要手动装一次新版。
+
 ## Risks / Trade-offs
 
 - [PyInstaller 漏收动态导入的模块，比如 uvicorn 的 `uvicorn.protocols.*`、`uvicorn.loops.*`] → 构建脚本显式加上 `--collect-submodules uvicorn` 并指定 hidden-import。构建完成后自动做冒烟测试：起 sidecar，打 `/health` 和 `/v1/models`（这一步用 mock 的 Kiro 环境变量，不联网）。
