@@ -15,7 +15,7 @@
   - 登录凭证在 `auth_kv` 表里，key 为 `kirocli:social:token`、`kirocli:odic:token` 或 `codewhisperer:odic:token`，value 是 JSON，包含 `access_token`、`refresh_token`、`expires_at` 等字段。
   - Windows 上的路径还没确认，README 待办里有这一条。
 - 网关读配置的方式：`kiro/config.py` 在 import 时执行 `load_dotenv()`，从当前目录读 `.env`，再从环境变量读。sidecar 可以完全靠环境变量传配置，不需要写 `.env`。
-- 参考实现：参考项目 `参考项目`，用的是 Tauri 2 + React 18 + TS + Vitest，带 single-instance、tray、autostart、updater，shell rc 写入时带标记并备份。本项目照它的结构和约束来，但不照搬它的业务模块。
+- 参考实现：一个已上线的 Tauri 2 桌面项目，用的是 Tauri 2 + React 18 + TS + Vitest，带 single-instance、tray、autostart、updater，shell rc 写入时带标记并备份。本项目照它的结构和约束来，但不照搬它的业务模块。
 - 本机还没装 Rust 工具链。
 
 ## Goals / Non-Goals
@@ -43,7 +43,7 @@
 - 不选 `--onefile`：它每次启动都要先解压到临时目录，冷启动多 1 到 3 秒。Windows 上杀毒软件经常拦截临时目录里的 exe，macOS 公证时内嵌的二进制也不好签名。onedir 启动快，签名可以逐个文件处理。
 - 不用 Tauri 的 `externalBin` sidecar 机制：它只支持单个可执行文件，跟 onedir 不兼容。
 - tiktoken 的 BPE 文件在构建时预先下载，放进包内。启动时通过 `TIKTOKEN_CACHE_DIR` 指向它，避免首次运行时去联网下载（`kiro/tokenizer.py` 已经支持这个环境变量）。
-- 包体：Python 3.13 运行时加 FastAPI、uvicorn、httpx、tiktoken，预计压缩后 25 到 45 MB，tasks 里有一项实测。参考项目 定的 20 MB 上限这里不适用。
+- 包体：Python 3.13 运行时加 FastAPI、uvicorn、httpx、tiktoken，预计压缩后 25 到 45 MB，tasks 里有一项实测。常见的 20 MB 包体上限这里不适用。
 
 ### 2. 配置全部通过环境变量传给 sidecar
 
@@ -144,7 +144,7 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 
 ### 9. 前端界面与技术栈
 
-- 技术栈沿用 参考项目 的约束：React 18 + TS + Vite、纯 CSS 变量、`useState`/`useReducer`、Vitest，不引入状态库、路由库或图表库。
+- 技术栈沿用参考项目的约束：React 18 + TS + Vite、纯 CSS 变量、`useState`/`useReducer`、Vitest，不引入状态库、路由库或图表库。
 - 单窗口两个页签：
   - 「主页」：环境检测清单、网关开关和状态、kclaude 状态和模型映射。
   - 「请求日志」：汇总卡片、按模型分组、列表和筛选。
@@ -186,17 +186,17 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
   - `background`：有新版本，当前版本不低于 `minRequiredVersion`。
   - `forced`：当前版本低于 `minRequiredVersion`。
   - 版本号按 `x.y.z` 数字逐段比较，任何一方解析失败都算 `none`，宁可不升也不误升。
-- 检查放在 Rust 定时器里：启动时查一次，之后每 60 分钟查一次。窗口隐藏后 webview 会被挂起，JS 定时器会停，参考项目 也是因为这个原因把检查放在 Rust。用 `tauri-plugin-updater` 的 `check()` 读清单，`download()` 下载并校验 minisign 签名。
+- 检查放在 Rust 定时器里：启动时查一次，之后每 60 分钟查一次。窗口隐藏后 webview 会被挂起，JS 定时器会停，参考项目也是因为这个原因把检查放在 Rust。用 `tauri-plugin-updater` 的 `check()` 读清单，`download()` 下载并校验 minisign 签名。
 - `background`：下载到 updater 的缓存后先不安装，在 App 数据目录记一个 `pending-update.json`。下次启动时先安装再进主界面，用户也可以在状态栏或托盘点「立即重启」。安装前先停网关，重启后按 `config.json` 里记的开关状态恢复。
 - `forced`：立即停网关，Rust 侧置 `upgrade_required` 标志（开关和托盘的启动命令都直接拒绝，`config.json` 写入 `upgradeRequired: true` 让 kclaude 脚本给出升级提示），前端显示不可关闭的升级遮罩，下载并安装完成后 `restart()`。下载失败时遮罩上显示「重试」和 dmg / exe 的直链，不回退到可用界面。
 - 签名私钥：minisign 私钥只存在维护者本机（比如 `~/.kiro-gateway/desktop-updater.key`）和 CI Secret 里，公钥写进 `tauri.conf.json`。私钥丢了，就再也发不出能被旧版接受的更新。
 - 发布：用 `desktop/scripts/release.sh VERSION=x.y.z NOTES=notes.md [FORCE=1]` 出包、签名、上传 COS，最后才覆盖 `latest.json`。上传顺序保证清单永远不会指向还没传完的文件。`FORCE=1` 时把 `minRequiredVersion` 设为本次版本。上传用 `coscli`，凭证从本机配置或环境变量读取，不进仓库。
-- 被否决的方案：参考项目 的后端发布通道。这个项目没有后端，COS 静态文件已经够用，而且 Tauri updater 原生就支持 static JSON。
+- 被否决的方案：自建后端发布通道。这个项目没有后端，COS 静态文件已经够用，而且 Tauri updater 原生就支持 static JSON。
 
 ## Risks / Trade-offs
 
 - [PyInstaller 漏收动态导入的模块，比如 uvicorn 的 `uvicorn.protocols.*`、`uvicorn.loops.*`] → 构建脚本显式加上 `--collect-submodules uvicorn` 并指定 hidden-import。构建完成后自动做冒烟测试：起 sidecar，打 `/health` 和 `/v1/models`（这一步用 mock 的 Kiro 环境变量，不联网）。
-- [包体比 参考项目 大] → 接受。实测之后记进 `desktop/AGENTS.md`。
+- [包体比常见 Tauri 应用大] → 接受。实测之后记进 `desktop/AGENTS.md`。
 - [Windows 杀毒软件误报 PyInstaller 产物] → onedir 比 onefile 好一些，但仍可能误报。在 README 里写明处理办法。签名放到后续 change。
 - [网关 `[Credit]` 计费和 record 写入路径出现分叉] → record 的 credits 和 `[Credit]` 日志在同一位置、读同一个变量。测试断言两者相等。
 - [两个网关同时刷新 kiro-cli token：桌面端 sidecar 和用户手动起的 8000 网关] → 端口冲突时不启动，降低同时运行的概率。token 写回本来就是现有行为，这次不改。

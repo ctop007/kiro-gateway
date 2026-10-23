@@ -20,7 +20,23 @@
 # ~/.tccli/default.credential.
 set -euo pipefail
 
-REPO="${KGW_GITHUB_REPO:-heyuan110/kiro-gateway}"
+# GitHub repo that builds the packages: KGW_GITHUB_REPO, else the github.com push URL
+# of the `internal` remote (owner/name), else this checkout's `origin` on github.com.
+github_repo() {
+  local url
+  for url in $(git -C "$(dirname "${BASH_SOURCE[0]}")" remote get-url --push --all internal 2>/dev/null) \
+             $(git -C "$(dirname "${BASH_SOURCE[0]}")" remote get-url origin 2>/dev/null); do
+    case "$url" in
+      *github.com*) printf '%s\n' "$url" | sed -E 's#^.*github\.com[^:/]*[:/]##; s#\.git$##'; return 0 ;;
+    esac
+  done
+  return 1
+}
+REPO="${KGW_GITHUB_REPO:-$(github_repo || true)}"
+if [ -z "$REPO" ]; then
+  echo "错误：不知道从哪个 GitHub 仓库取构建产物。设置 KGW_GITHUB_REPO=owner/name 再试。" >&2
+  exit 2
+fi
 WORKFLOW="desktop-release.yml"
 DESKTOP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$DESKTOP/scripts/release_lib.py"

@@ -15,7 +15,7 @@
 - 测试：Vitest（前端纯函数与状态映射）+ `cargo test`（Rust 纯函数与文件操作）。
 - Tauri 插件只用：single-instance（必须第一个注册）、opener、clipboard-manager、autostart，以及 update 批次加入的 updater + process；托盘用 core `tray-icon`。
 - 不引入：Next.js、Zustand、Redux、react-router、framer-motion / motion、gsap、animejs、recharts 等图表库、lucide-react 等图标库、shadcn CLI、Tailwind、任何 UI 组件库。图标用内联 SVG。
-- Rust 依赖固定精确版本（`"=x.y.z"`），优先与 参考项目 `desktop-app/src-tauri/Cargo.lock` 中已验证的版本一致；npm 依赖不用 `^` / `~`。加依赖前先说明用途和体积。
+- Rust 依赖固定精确版本（`"=x.y.z"`），优先选用已在其他 Tauri 2 项目中验证过的版本；npm 依赖不用 `^` / `~`。加依赖前先说明用途和体积。
 
 ## 前端结构
 
@@ -86,7 +86,7 @@
 
 ## 包体
 
-- 包含 PyInstaller onedir 的网关 sidecar，参考项目 的 20 MB 上限不适用。
+- 包含 PyInstaller onedir 的网关 sidecar，常见的 20 MB 包体上限不适用。
 - 实测 universal（`make sidecar-universal` + `CI=true pnpm tauri build --bundles app,dmg --target universal-apple-darwin`，ad-hoc 签名）：
   - dmg：48.8 MB（`Kiro Gateway_0.0.1_universal.dmg`，51125461 字节）；`.app` 97 MB（主程序 universal，`gateway-aarch64/` 44 MB + `gateway-x86_64/` 41 MB）。
   - 原生 arm64 与 `arch -x86_64`（Rosetta）下各自启动：/health 通，sidecar 分别是 `gateway-aarch64`（arm64）与 `gateway-x86_64`（x86_64），停止后无遗留进程。

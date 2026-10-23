@@ -16,18 +16,13 @@ use crate::gateway::types::{FailureKind, GatewayState};
 use std::ffi::OsString;
 use std::fs;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::tempdir;
 
 fn built_sidecar() -> Option<Sidecar> {
-    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../desktop/src-tauri/resources");
-    let resources = if resources.exists() {
-        resources
-    } else {
-        PathBuf::from("/Users/me/kiro-gateway/desktop/src-tauri/resources")
-    };
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
     sidecar::resolve(&resources, None, std::env::consts::ARCH).ok()
 }
 

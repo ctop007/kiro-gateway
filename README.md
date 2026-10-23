@@ -27,7 +27,7 @@
 ### 1. 安装
 
 ```bash
-git clone <仓库地址>
+git clone <仓库地址> kiro-gateway
 cd kiro-gateway
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt

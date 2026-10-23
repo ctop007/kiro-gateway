@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- 新增 `desktop/`：Tauri 2 + Rust 桌面壳，前端 React + TypeScript，技术栈与 参考项目 `desktop-app` 保持一致。出两种包：macOS dmg、Windows NSIS 安装器。
+- 新增 `desktop/`：Tauri 2 + Rust 桌面壳，前端 React + TypeScript，技术栈沿用一个已上线的 Tauri 2 桌面项目。出两种包：macOS dmg、Windows NSIS 安装器。
 - Python 网关用 PyInstaller 打成独立目录，放进安装包，由 App 作为子进程拉起和停止。用户机器上不需要装 Python。
 - **一个开关**：启动 / 停止 KiroGateway，并实时显示状态（已停止 / 启动中 / 运行中 / 启动失败及原因）。网关只监听 `127.0.0.1`。
 - **kclaude 命令**：App 启动时检查 `kclaude` 是否已安装，没有就自动装上。macOS 往 `~/.zshrc` 加一段带标记的 source，Windows 往 PowerShell profile 里加。只新增 `kclaude`，不改 `claude` 本身，也不改 Claude Code 的任何配置文件。
