@@ -36,3 +36,5 @@ requests/
 htmlcov/
 # Local agent tooling (skills, commands)
 .claude/
+.agents/
+.kiro/
