@@ -170,9 +170,9 @@ Kiro 按 credits 计费，不同模型的倍率不同。Claude Code 每次请求
 
 | 位置 | 说明 |
 |---|---|
-| 内部仓库 | 组内 Git 仓库（本地远程名为 `internal`） |
+| 我们的仓库 | GitHub 仓库（本地远程名为 `internal`；推 `desktop-v*` tag 会在这里自动打包发布） |
 | 上游 | `https://github.com/jwadow/kiro-gateway`（本地远程名为 `origin`） |
-| 本地工作分支 | `local-merged`，对应内部仓库的 `main` |
+| 本地工作分支 | `local-merged`，对应我们仓库的 `main` |
 
 同步上游、合并上游 PR 的步骤见 [README 开发与维护](../../README.md#开发与维护)。
 
