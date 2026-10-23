@@ -694,3 +694,23 @@ class TestPickFreePort(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFrozenUtf8Mode(unittest.TestCase):
+    """
+    Both build scripts must freeze the sidecar in Python UTF-8 mode.
+
+    A PyInstaller build ignores PYTHONUTF8 / PYTHONIOENCODING, so the App's
+    environment cannot fix a Windows console code page (cp1252, gbk) that
+    cannot encode the gateway's banner and log text.
+    """
+
+    SCRIPTS = Path(__file__).resolve().parent
+
+    def test_shell_script_passes_utf8_mode(self):
+        text = (self.SCRIPTS / "build-sidecar.sh").read_text(encoding="utf-8")
+        self.assertIn('--python-option "X utf8"', text)
+
+    def test_powershell_script_passes_utf8_mode(self):
+        text = (self.SCRIPTS / "build-sidecar.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("--python-option 'X utf8'", text)

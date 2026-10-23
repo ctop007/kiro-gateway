@@ -407,3 +407,71 @@ class TestCliVersion:
         print(f"APP_VERSION: {APP_VERSION}")
         
         assert APP_VERSION in captured.out
+
+class TestConsoleEncodingSafety:
+    """
+    The gateway must start on consoles that cannot encode emoji.
+
+    Windows consoles default to cp1252 / gbk; the startup banner prints emoji and
+    used to crash the process with UnicodeEncodeError before the server started
+    (seen in the desktop sidecar smoke test on a Windows runner).
+    """
+
+    @staticmethod
+    def _cp1252_stream():
+        import io
+        return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+
+    def test_banner_crashes_on_cp1252_without_the_fix(self):
+        """
+        What it does: Prints the banner to a strict cp1252 stream directly.
+        Purpose: Documents the failure the fix exists for.
+        """
+        from main import print_startup_banner
+
+        stream = self._cp1252_stream()
+        with patch("sys.stdout", stream):
+            with pytest.raises(UnicodeEncodeError):
+                print_startup_banner("127.0.0.1", 6868)
+
+    def test_banner_survives_cp1252_after_making_console_safe(self):
+        """
+        What it does: Applies make_console_output_safe() and prints the banner.
+        Purpose: Unencodable characters are replaced instead of killing startup.
+        """
+        from main import make_console_output_safe, print_startup_banner
+
+        out, err = self._cp1252_stream(), self._cp1252_stream()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            make_console_output_safe()
+            print_startup_banner("127.0.0.1", 6868)
+            sys.stdout.flush()
+
+        text = out.buffer.getvalue().decode("cp1252")
+        assert "http://127.0.0.1:6868" in text
+
+    def test_utf8_streams_keep_their_characters(self):
+        """
+        What it does: Applies the fix to a UTF-8 stream.
+        Purpose: Terminals that can show emoji still get them.
+        """
+        import io
+        from main import make_console_output_safe, print_startup_banner
+
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        with patch("sys.stdout", out):
+            make_console_output_safe()
+            print_startup_banner("127.0.0.1", 6868)
+            sys.stdout.flush()
+
+        assert "👻" in out.buffer.getvalue().decode("utf-8")
+
+    def test_streams_without_reconfigure_are_left_alone(self):
+        """
+        What it does: Applies the fix when stdout is a plain StringIO (no reconfigure()).
+        Purpose: Test runners and wrappers that replace sys.stdout must not break startup.
+        """
+        from main import make_console_output_safe
+
+        with patch("sys.stdout", StringIO()), patch("sys.stderr", StringIO()):
+            make_console_output_safe()

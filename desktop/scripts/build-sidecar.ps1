@@ -117,6 +117,7 @@ try {
     try {
         & $VenvPy -m PyInstaller `
             --noconfirm --clean --onedir --console `
+            --python-option 'X utf8' `
             --name $AppName `
             --paths $RepoRoot `
             --distpath (Join-Path $WorkDir 'dist') `

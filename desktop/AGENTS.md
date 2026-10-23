@@ -64,7 +64,7 @@
 - `make dev`：开发窗口（HMR）。
 - `make test`：`pnpm test` + `cargo test`。
 - `make check`：`tsc --noEmit` + `vite build`。
-- `make sidecar`：调 `scripts/build-sidecar.sh` 打包本机架构的网关到 `src-tauri/resources/gateway-<arch>/`（`aarch64` 或 `x86_64`；目录 gitignore，只保留 `.gitkeep`）。`--arch arm64|x86_64` 指定架构；Apple Silicon 上打 x86_64 会自动用 `arch -x86_64` 重跑自己，并用 `uv python find cpython-3.13-macos-x86_64` 找解释器（先 `uv python install cpython-3.13-macos-x86_64`；也可用 `KGW_PYTHON` 指定），冒烟测试在 Rosetta 下照样跑。x86_64 的 venv 是 `.build-venv-x86_64`，arm64 的仍是 `.build-venv`。
+- `make sidecar`：调 `scripts/build-sidecar.sh` 打包本机架构的网关到 `src-tauri/resources/gateway-<arch>/`（`aarch64` 或 `x86_64`；目录 gitignore，只保留 `.gitkeep`）。`--arch arm64|x86_64` 指定架构；Apple Silicon 上打 x86_64 会自动用 `arch -x86_64` 重跑自己，并用 `uv python find cpython-3.13-macos-x86_64` 找解释器（先 `uv python install --no-bin cpython-3.13-macos-x86_64`，`--no-bin` 避免在 PATH 里留一个 x86_64 的 `python3.13`；也可用 `KGW_PYTHON` 指定），冒烟测试在 Rosetta 下照样跑。x86_64 的 venv 是 `.build-venv-x86_64`，arm64 的仍是 `.build-venv`。
 - `make sidecar-universal`：两个架构各打一遍。
 - `make dmg-local`：本机出未签名 dmg，**只打本机架构**的 sidecar（用 `--config` 把另一个目录从 `bundle.resources` 里去掉）。会拉起 Finder 给 dmg 窗口排版；无人值守（CI、远程会话）时用 `CI=true pnpm tauri build --bundles app,dmg`，跳过排版。
 - `make dmg-universal`：出 macOS 通用（Intel + Apple 芯片）未签名 dmg，需先 `make sidecar-universal`；等价于 `CI=true pnpm tauri build --bundles app,dmg --target universal-apple-darwin`，产物在 `src-tauri/target/universal-apple-darwin/release/bundle/`。

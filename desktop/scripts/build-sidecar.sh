@@ -113,11 +113,19 @@ pick_python() {
       if [ -n "$uv_py" ]; then candidates=("$uv_py"); fi
     fi
   else
-    candidates=(python3.13 python3.12 python3.11 python3.10 python3)
+    candidates=()
+    # uv's interpreter for this architecture first: a `uv python install` of another
+    # architecture can leave a python3.13 shim of the wrong architecture on PATH.
+    if command -v uv >/dev/null 2>&1; then
+      uv_py="$(uv python find "cpython-3.13-macos-$TARGET_ARCH" 2>/dev/null || true)"
+      if [ -n "$uv_py" ]; then candidates=("$uv_py"); fi
+    fi
+    candidates+=(python3.13 python3.12 python3.11 python3.10 python3)
   fi
   for candidate in ${candidates[@]+"${candidates[@]}"}; do
     if command -v "$candidate" >/dev/null 2>&1 \
-       && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+       && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null \
+       && { [ -n "${KGW_PYTHON:-}" ] || python_matches_arch "$candidate"; }; then
       command -v "$candidate"
       return 0
     fi
@@ -125,15 +133,26 @@ pick_python() {
   return 1
 }
 
+# True when the interpreter's platform is the target architecture (wrong-architecture
+# candidates are skipped; an explicit KGW_PYTHON is checked, and rejected, below).
+python_matches_arch() {
+  local platform
+  platform="$("$1" -c 'import sysconfig; print(sysconfig.get_platform())' 2>/dev/null)" || return 1
+  case "$TARGET_ARCH:$platform" in
+    aarch64:*arm64*|x86_64:*x86_64*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if ! BOOT_PYTHON="$(pick_python)"; then
-  echo "错误：找不到 $TARGET_ARCH 架构的 Python 3.10 或更新的版本。装一个（例如 brew install python@3.13；x86_64 用 uv python install cpython-3.13-macos-x86_64），或用 KGW_PYTHON 指定路径。" >&2
+  echo "错误：找不到 $TARGET_ARCH 架构的 Python 3.10 或更新的版本。装一个（例如 brew install python@3.13；x86_64 用 uv python install --no-bin cpython-3.13-macos-x86_64），或用 KGW_PYTHON 指定路径。" >&2
   exit 1
 fi
 PY_PLATFORM="$("$BOOT_PYTHON" -c 'import sysconfig; print(sysconfig.get_platform())')"
 case "$TARGET_ARCH:$PY_PLATFORM" in
   aarch64:*arm64*|x86_64:*x86_64*) ;;
   *)
-    echo "错误：解释器 $BOOT_PYTHON 的平台是 $PY_PLATFORM，与 --arch $TARGET_ARCH 不符。用 KGW_PYTHON 指向 $TARGET_ARCH 版本的 Python。" >&2
+    echo "错误：解释器 $BOOT_PYTHON 的平台是 ${PY_PLATFORM}，与 --arch $TARGET_ARCH 不符。用 KGW_PYTHON 指向 $TARGET_ARCH 版本的 Python。" >&2
     exit 1
     ;;
 esac
@@ -176,6 +195,7 @@ log "PyInstaller --onedir ${NEGATIVE_MODULE:+(去掉 $NEGATIVE_MODULE) }..."
   cd "$WORK_DIR"
   "$VENV_PY" -m PyInstaller \
     --noconfirm --clean --onedir --console \
+    --python-option "X utf8" \
     --name "$APP_NAME" \
     --paths "$REPO_ROOT" \
     --distpath "$WORK_DIR/dist" \

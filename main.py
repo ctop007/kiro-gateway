@@ -690,6 +690,26 @@ def resolve_server_config(args: argparse.Namespace) -> tuple[str, int]:
     return final_host, final_port
 
 
+def make_console_output_safe() -> None:
+    """
+    Keep console output from crashing the gateway on narrow encodings.
+
+    Windows consoles default to code pages such as cp1252 or gbk that cannot
+    encode the emoji in the startup banner, and a frozen (PyInstaller) build
+    ignores PYTHONUTF8 / PYTHONIOENCODING. Unencodable characters are replaced
+    instead of raising UnicodeEncodeError. Streams that cannot be reconfigured
+    (for example a StringIO installed by a test runner) are left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError) as e:
+            logger.debug(f"Could not make {getattr(stream, 'name', 'stream')} encoding-safe: {e}")
+
+
 def print_startup_banner(host: str, port: int) -> None:
     """
     Print a startup banner with server information.
@@ -743,7 +763,8 @@ if __name__ == "__main__":
     # Resolve final configuration with priority hierarchy
     final_host, final_port = resolve_server_config(args)
     
-    # Print startup banner
+    # Print startup banner (never crash on consoles that cannot show emoji)
+    make_console_output_safe()
     print_startup_banner(final_host, final_port)
     
     logger.info(f"Starting Uvicorn server on {final_host}:{final_port}...")

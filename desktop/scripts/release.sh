@@ -49,7 +49,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
     -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
-    *) echo "未知参数：$arg（见 --help）" >&2; exit 2 ;;
+    *) echo "未知参数：${arg}（见 --help）" >&2; exit 2 ;;
   esac
 done
 

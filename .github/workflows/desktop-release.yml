@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           # x86_64 版在 Rosetta 下构建和冒烟
           /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
-          uv python install cpython-3.13-macos-aarch64 cpython-3.13-macos-x86_64
+          uv python install --no-bin cpython-3.13-macos-aarch64 cpython-3.13-macos-x86_64
           bash scripts/build-sidecar.sh --arch arm64
           bash scripts/build-sidecar.sh --arch x86_64
 
