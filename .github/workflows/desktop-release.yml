@@ -1,0 +1,145 @@
+# 桌面端（desktop/）出包：mac universal dmg + 签名更新包，Windows NSIS 安装器 + 签名。
+# 触发：
+#   - push tag `desktop-v*`：出包并挂到 GitHub Release（tag 名就是 Release 名）
+#   - 手动 workflow_dispatch：只出包、上传 artifact，不建 Release（用来试跑）
+# 发布到腾讯云 COS 不在这里做：本机 desktop/scripts/release.sh 从 Release 拉包、生成
+# latest.json 再上传，COS 凭证不进 GitHub。签名私钥在 Secret TAURI_SIGNING_PRIVATE_KEY。
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: desktop
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macOS (universal)
+            os: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: Windows (x64)
+            os: windows-latest
+            rust_targets: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.platform.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        if: runner.os == 'macOS'
+        with:
+          workspaces: desktop/src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # ── 网关 sidecar（PyInstaller 只能打本机架构）──
+      - uses: astral-sh/setup-uv@v6
+        if: runner.os == 'macOS'
+
+      - name: Sidecars (macOS arm64 + x86_64)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # x86_64 版在 Rosetta 下构建和冒烟
+          /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          uv python install cpython-3.13-macos-aarch64 cpython-3.13-macos-x86_64
+          bash scripts/build-sidecar.sh --arch arm64
+          bash scripts/build-sidecar.sh --arch x86_64
+
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: '3.13'
+
+      - name: Sidecar (Windows x64)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-sidecar.ps1
+
+      # ── App 与更新包（minisign 签名；私钥无密码）──
+      - name: Build app (macOS universal)
+        if: runner.os == 'macOS'
+        env:
+          CI: 'true'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: >-
+          pnpm tauri build --target universal-apple-darwin --bundles app,dmg
+          --config src-tauri/tauri.updater.conf.json
+
+      - name: Build app (Windows NSIS)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CI: 'true'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: >-
+          pnpm tauri build --bundles nsis
+          --config src-tauri/tauri.updater.conf.json
+
+      # upload-artifact 不吃 working-directory，路径要带 desktop/ 前缀
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ runner.os }}
+          path: |
+            desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+          retention-days: 90
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - run: find artifacts -type f
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Kiro Gateway 桌面端 ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.sig
+          fail_on_unmatched_files: true
