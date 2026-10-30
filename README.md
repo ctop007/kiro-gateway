@@ -4,7 +4,7 @@
 
 ## 下载
 
-到 [Releases](https://github.com/heyuan110/kiro-gateway/releases/latest) 下载：
+到 [Releases](https://github.com/ctop007/kiro-gateway/releases/latest) 下载：
 
 - **macOS**：`Kiro-Gateway_<版本>_universal.dmg`（Intel 和 Apple Silicon 通用）
 - **Windows**：`Kiro-Gateway_<版本>_x64-setup.exe`
@@ -22,9 +22,10 @@ App 会自动检查环境，有问题会告诉你怎么修。请求日志页能�
 ## 常见问题
 
 - **模型拒绝回答**：Kiro 不支持原生的扩展思考，App 已经默认关掉了伪推理（`FAKE_REASONING=false`）。如果还出现，换个问法或换个模型。
-- **HTTP 402 `Monthly request limit exceeded`**：Kiro 本月额度用完了，到 kiro-cli 里看用量和重置时间。
+- **HTTP 402 `Monthly request limit exceeded`**：上游拒绝了当前请求的额度。先核对 kiro-cli 当前账号、用量和 profile 是否一致；账号页面仍有额度时，不要直接判断为整个账号额度耗尽。
 - **`prompt is too long`**：对话超出了上下文窗口，在 Claude Code 里执行 `/compact`。
 - **登录失效（401 / 403）**：重新 `kiro-cli login`，再打开开关。
+- **原生 kiro-cli 可用，但网关报 403**：网关会先刷新一次凭证；如果 runtime 仍明确拒绝 SSO token，自动尝试不带缓存 profile 的 Q 接口。成功后仅在当前进程、当前账号内记住该路径。失败会保留真实 HTTP 状态和原因，不再误报 `504 / Unknown error`。源码运行可用 `KIRO_SSO_LEGACY_FALLBACK=false` 关闭兼容重试。
 
 ## 不用 App，直接跑网关
 

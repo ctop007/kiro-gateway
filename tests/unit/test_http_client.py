@@ -19,6 +19,144 @@ from kiro.auth import KiroAuthManager
 from kiro.config import MAX_RETRIES, BASE_RETRY_DELAY, FIRST_TOKEN_MAX_RETRIES, STREAMING_READ_TIMEOUT
 
 
+class TestSsoGenerationCompatibility:
+    """Exercise endpoint compatibility without live credentials or network access."""
+
+    INVALID_TOKEN = "The bearer token included in the request is invalid."
+    RUNTIME = "https://runtime.us-east-1.kiro.dev/generateAssistantResponse"
+    LEGACY = "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+
+    @staticmethod
+    def manager(sso: bool = True) -> KiroAuthManager:
+        """Create an isolated account with mocked token operations."""
+        manager = KiroAuthManager(
+            client_id="test-client" if sso else None,
+            client_secret="test-secret" if sso else None,
+            api_region="us-east-1",
+        )
+        manager.get_access_token = AsyncMock(return_value="test-token")
+        manager.force_refresh = AsyncMock(return_value="refreshed-token")
+        return manager
+
+    @staticmethod
+    def transport(responses: list[httpx.Response]) -> Mock:
+        """Capture both streaming and buffered requests with real HTTP responses."""
+        client = Mock(spec=["request", "build_request", "send"])
+        client.request = AsyncMock(side_effect=responses)
+        client.build_request = Mock(side_effect=httpx.Request)
+        client.send = AsyncMock(side_effect=responses)
+        return client
+
+    @staticmethod
+    def requests(client: Mock, stream: bool) -> list[tuple[str, dict]]:
+        """Read the transmitted URL and JSON without depending on internal state."""
+        calls = client.build_request.call_args_list if stream else client.request.call_args_list
+        return [(call.args[1], json.loads(call.kwargs["content"])) for call in calls]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_rejected_sso_refreshes_then_falls_back_and_remembers_success(self, stream: bool) -> None:
+        """Keep runtime first; remember Q only after it accepts the same account."""
+        manager = self.manager()
+        denied = [httpx.Response(403, stream=httpx.ByteStream(
+            json.dumps({"message": self.INVALID_TOKEN}).encode(),
+        )) for _ in range(2)]
+        assert all(not response.is_closed for response in denied)
+        client = self.transport([*denied, httpx.Response(200), httpx.Response(200)])
+        payload = {"conversationState": {"history": ["unchanged"]}, "profileArn": "cached-profile"}
+        gateway = KiroHttpClient(manager, shared_client=client)
+        response = await gateway.request_with_retry("POST", self.RUNTIME, payload, stream=stream)
+        assert response.status_code == 200
+        assert self.requests(client, stream) == [
+            (self.RUNTIME, payload), (self.RUNTIME, payload),
+            (self.LEGACY, {"conversationState": payload["conversationState"]}),
+        ]
+        assert payload["profileArn"] == "cached-profile"
+        manager.force_refresh.assert_awaited_once()
+        assert all(response.is_closed for response in denied)
+        assert manager.legacy_generation_enabled is True
+        # A new per-request HTTP client must reuse the account's successful choice.
+        await KiroHttpClient(manager, shared_client=client).request_with_retry(
+            "POST", self.RUNTIME, payload, stream=stream,
+        )
+        assert self.requests(client, stream)[-1][0] == self.LEGACY
+        assert self.manager().legacy_generation_enabled is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_missing_profile_can_use_sso_without_changing_credentials(self, stream: bool) -> None:
+        """A missing runtime profile should not require fabricating an ARN."""
+        manager = self.manager()
+        client = self.transport([
+            httpx.Response(400, json={"message": "profileArn is required for this request."}),
+            httpx.Response(200),
+        ])
+        response = await KiroHttpClient(manager, shared_client=client).request_with_retry(
+            "POST", self.RUNTIME, {"conversationState": {}}, stream=stream,
+        )
+        assert response.status_code == 200
+        assert self.requests(client, stream)[-1][0] == self.LEGACY
+        manager.force_refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("case", ["desktop", "disabled", "other_url", "permission", "malformed"])
+    async def test_unrelated_failures_keep_original_status_and_do_not_fallback(
+        self, stream: bool, case: str,
+    ) -> None:
+        """Do not redirect social logins, other APIs, or unrelated denials."""
+        manager = self.manager(sso=case != "desktop")
+        message = "Account access denied" if case == "permission" else self.INVALID_TOKEN
+        responses = [
+            httpx.Response(403, content=b"not-json") if case == "malformed"
+            else httpx.Response(403, json={"message": message})
+            for _ in range(3)
+        ]
+        client = self.transport(responses)
+        url = "https://runtime.us-east-1.kiro.dev/mcp" if case == "other_url" else self.RUNTIME
+        with patch("kiro.http_client.KIRO_SSO_LEGACY_FALLBACK", case != "disabled"):
+            response = await KiroHttpClient(manager, shared_client=client).request_with_retry(
+                "POST", url, {"conversationState": {}, "profileArn": "keep"}, stream=stream,
+            )
+        assert response.status_code == 403
+        assert response.content == responses[0].content
+        assert all(target == url and body["profileArn"] == "keep" for target, body in self.requests(client, stream))
+        assert manager.legacy_generation_enabled is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("status", [400, 403, 429, 500])
+    async def test_failed_fallback_is_not_remembered(self, stream: bool, status: int) -> None:
+        """Return the actual Q error and never cache an unsuccessful probe."""
+        manager = self.manager()
+        client = self.transport([
+            httpx.Response(403, json={"message": self.INVALID_TOKEN}),
+            httpx.Response(403, json={"message": self.INVALID_TOKEN}),
+            httpx.Response(status, json={"message": "upstream rejection"}),
+        ])
+        with patch("kiro.http_client.asyncio.sleep", new_callable=AsyncMock):
+            response = await KiroHttpClient(manager, shared_client=client).request_with_retry(
+                "POST", self.RUNTIME, {"conversationState": {}}, stream=stream,
+            )
+        assert response.status_code == status
+        assert response.json()["message"] == "upstream rejection"
+        assert manager.legacy_generation_enabled is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_final_403_preserves_body_without_useless_refresh(self, stream: bool) -> None:
+        """An exhausted retry budget must return 403 instead of an unknown 504."""
+        manager = self.manager()
+        client = self.transport([httpx.Response(403, json={"message": self.INVALID_TOKEN})])
+        with patch("kiro.http_client.MAX_RETRIES", 1), patch("kiro.http_client.FIRST_TOKEN_MAX_RETRIES", 1):
+            response = await KiroHttpClient(manager, shared_client=client).request_with_retry(
+                "POST", self.RUNTIME, {"conversationState": {}}, stream=stream,
+            )
+        assert response.status_code == 403
+        assert response.json()["message"] == self.INVALID_TOKEN
+        manager.force_refresh.assert_not_awaited()
+
+
 @pytest.fixture
 def mock_auth_manager_for_http():
     """Creates a mocked KiroAuthManager for HTTP client tests."""

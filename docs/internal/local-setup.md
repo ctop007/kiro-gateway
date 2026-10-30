@@ -101,6 +101,7 @@ FAKE_REASONING=false
 |---|---|
 | `PROXY_API_KEY` | 客户端访问网关的密码，可以随便定。kclaude 会自动读取，改了不用改别处 |
 | `KIRO_CLI_DB_FILE` | kiro-cli 的登录数据库。token、profileArn、区域都从这里自动读取。网关刷新 token 后会写回这个文件，和 kiro-cli 共用登录状态 |
+| `KIRO_SSO_LEGACY_FALLBACK` | 默认 `true`。SSO 生成请求在 runtime 刷新后仍返回特定 token 无效错误，或缺少必需 profile 时，重试同区域 Q 接口且不携带缓存 profile。成功路径仅按账号保存在内存中，不修改原始请求或数据库 profile；社交登录、其他接口和普通权限拒绝不触发。设为 `false` 禁用（源码运行配置；桌面包采用默认值） |
 | `FAKE_REASONING=false` | 关闭伪推理。不关的话，Opus 5、Opus 5.5、Sonnet 5.5 会拒答（详见第五节） |
 
 也可以改用 Kiro IDE 的凭证文件，把 `KIRO_CLI_DB_FILE` 换成 `KIRO_CREDS_FILE="~/.aws/sso/cache/kiro-auth-token.json"`。但企业 SSO 账号用这种方式时，需要另外配置 `PROFILE_ARN`。用 kiro-cli 数据库则不需要。

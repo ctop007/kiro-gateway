@@ -230,6 +230,9 @@ class KiroAuthManager:
         self._refresh_url = get_kiro_refresh_url(sso_region_for_oidc)
         self._api_host = get_kiro_api_host(final_api_region)
         self._q_host = get_kiro_q_host(final_api_region)
+        # Compatibility is learned per account, never persisted into the CLI database.
+        self._legacy_generation_url = f"https://q.{final_api_region}.amazonaws.com/generateAssistantResponse"
+        self._legacy_generation_enabled = False
         
         # Log initialized endpoints for diagnostics (helps with DNS issues like #58, #132, #133)
         logger.info(
@@ -955,6 +958,20 @@ class KiroAuthManager:
             await self._refresh_token_request()
             return self._access_token
     
+    @property
+    def legacy_generation_url(self) -> str:
+        """Q generation URL in the resolved API region, independent of the SSO region."""
+        return self._legacy_generation_url
+
+    @property
+    def legacy_generation_enabled(self) -> bool:
+        """Whether this account has successfully generated through the Q fallback."""
+        return self._legacy_generation_enabled
+
+    def mark_legacy_generation_compatible(self) -> None:
+        """Remember a successful Q generation for this account's process lifetime."""
+        self._legacy_generation_enabled = True
+
     @property
     def profile_arn(self) -> Optional[str]:
         """AWS CodeWhisperer profile ARN."""

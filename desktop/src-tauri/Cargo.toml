@@ -1,6 +1,6 @@
 [package]
 name = "kiro-gateway-desktop"
-version = "0.0.1"
+version = "0.0.3"
 description = "Kiro Gateway desktop app"
 edition = "2021"
 

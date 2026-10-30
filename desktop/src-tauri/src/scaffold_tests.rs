@@ -31,7 +31,8 @@ fn version_is_consistent_across_three_files() {
     let conf_version = tauri_conf()["version"].as_str().unwrap().to_string();
     let pkg_version = read_json("../package.json")["version"].as_str().unwrap().to_string();
     let cargo_version = env!("CARGO_PKG_VERSION");
-    assert_eq!(conf_version, "0.0.1");
+    // Releases may bump the version; all three sources must still agree.
+    assert!(!conf_version.is_empty());
     assert_eq!(pkg_version, conf_version, "package.json vs tauri.conf.json");
     assert_eq!(cargo_version, conf_version, "Cargo.toml vs tauri.conf.json");
 }
@@ -88,6 +89,8 @@ fn macos_bundle_carries_one_sidecar_directory_per_architecture() {
     // tauri.macos.conf.json is merged over the base config on macOS (JSON merge patch):
     // `null` drops the Windows entry, the two arch entries replace it.
     let conf = read_json("tauri.macos.conf.json");
+    // Ad-hoc signing must seal nested sidecars as well as the main app.
+    assert_eq!(conf["bundle"]["macOS"]["signingIdentity"], "-");
     let resources = &conf["bundle"]["resources"];
     assert!(resources["resources/gateway/"].is_null(), "the single gateway/ entry must be removed on macOS");
     assert!(resources.as_object().unwrap().contains_key("resources/gateway/"));
@@ -119,7 +122,7 @@ fn update_manifest_url_is_declared_once() {
     let url = endpoints[0].as_str().unwrap();
     assert!(url.starts_with("https://"), "manifest must be fetched over https");
     assert_eq!(
-        url, "https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json",
+        url, "https://github.com/ctop007/kiro-gateway/releases/latest/download/latest.json",
         "manifest is the latest.json asset of the newest GitHub Release"
     );
     assert!(!url.contains("myqcloud.com"), "Tencent COS is no longer used");

@@ -16,6 +16,57 @@ import httpx
 from kiro.config import PROXY_API_KEY
 
 
+@pytest.mark.parametrize("api", ["anthropic", "openai"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_sso_fallback_through_both_api_surfaces(
+    test_client: TestClient, api: str, stream: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve replies across conversion, SSO compatibility retry, and SSE parsing."""
+    from kiro.auth import KiroAuthManager
+    from kiro.http_client import KiroHttpClient
+
+    manager = KiroAuthManager(
+        client_id="test-client", client_secret="test-secret",
+        profile_arn="cached-profile", api_region="us-east-1",
+    )
+    manager.get_access_token = AsyncMock(return_value="test-token")
+    manager.force_refresh = AsyncMock(return_value="fresh-test-token")
+    account = test_client.app.state.account_manager.get_first_account()
+    monkeypatch.setattr(account, "auth_manager", manager)
+    monkeypatch.setattr(test_client.app.state, "account_system", False)
+    upstream = Mock(spec=["request", "build_request", "send"])
+    responses = [
+        httpx.Response(403, json={"message": "The bearer token included in the request is invalid."}),
+        httpx.Response(403, json={"message": "The bearer token included in the request is invalid."}),
+        httpx.Response(200, content=b'{"content":"Compatibility OK","modelId":"claude-haiku-4.5"}'),
+    ]
+    upstream.request = AsyncMock(side_effect=responses)
+    upstream.send = AsyncMock(side_effect=responses)
+    upstream.build_request = Mock(side_effect=httpx.Request)
+    monkeypatch.setattr(KiroHttpClient, "_get_client", AsyncMock(return_value=upstream))
+    route = "/v1/messages" if api == "anthropic" else "/v1/chat/completions"
+    response = test_client.post(
+        route, headers={"Authorization": f"Bearer {PROXY_API_KEY}"},
+        json={"model": "claude-haiku-4-5", "max_tokens": 64, "stream": stream,
+              "messages": [{"role": "user", "content": "Reply Compatibility OK."}]},
+    )
+    assert response.status_code == 200, response.text
+    if stream:
+        assert "Compatibility OK" in response.text
+        assert '"type": "error"' not in response.text
+    elif api == "anthropic":
+        assert response.json()["content"][0]["text"] == "Compatibility OK"
+    else:
+        assert response.json()["choices"][0]["message"]["content"] == "Compatibility OK"
+    calls = upstream.build_request.call_args_list if upstream.send.called else upstream.request.call_args_list
+    assert len(calls) == 3
+    assert calls[-1].args[1] == "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+    original = json.loads(calls[0].kwargs["content"])
+    fallback = json.loads(calls[-1].kwargs["content"])
+    assert original.pop("profileArn") == "cached-profile"
+    assert fallback == original
+
+
 class TestFullChatCompletionFlow:
     """Integration tests for complete chat completions flow."""
     

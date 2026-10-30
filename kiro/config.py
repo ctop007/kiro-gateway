@@ -184,6 +184,10 @@ KIRO_API_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 # Host for Q API (ListAvailableModels)
 KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 
+# Some CLI SSO credentials can generate through Q without a profile, but are
+# rejected by runtime with the cached profile. Keep runtime as the first choice.
+KIRO_SSO_LEGACY_FALLBACK: bool = os.getenv("KIRO_SSO_LEGACY_FALLBACK", "true").lower() == "true"
+
 # ==================================================================================================
 # Token Settings
 # ==================================================================================================

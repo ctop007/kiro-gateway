@@ -105,7 +105,7 @@
 
 ## 发版
 
-安装包和应用内升级用的 `latest.json` 都放 GitHub Releases（仓库 `heyuan110/kiro-gateway`）。App 读 `https://github.com/heyuan110/kiro-gateway/releases/latest/download/latest.json`，地址只在 `tauri.conf.json` 的 `plugins.updater.endpoints` 里写一次。
+安装包和应用内升级用的 `latest.json` 都放 GitHub Releases（仓库 `ctop007/kiro-gateway`）。App 读 `https://github.com/ctop007/kiro-gateway/releases/latest/download/latest.json`，地址只在 `tauri.conf.json` 的 `plugins.updater.endpoints` 里写一次。
 
 ```bash
 # 1. 改三处版本号（package.json、src-tauri/tauri.conf.json、src-tauri/Cargo.toml，Cargo.lock 里本包条目同步），提交
@@ -113,13 +113,13 @@
 # 2. 打 annotated tag：正文就是更新说明（一行一条）
 git tag -a desktop-v0.0.2 -F notes.md
 # 3. 推 tag，GitHub 自动出包、生成 latest.json、发布 Release
-git push internal desktop-v0.0.2
+git push origin desktop-v0.0.2
 ```
 
 - 强制升级：在 `notes.md` 里单独写一行 `[force-upgrade]`，`minRequiredVersion` 就是本次版本，低于它的旧版必须升级；这一行不会出现在更新说明里。没有这一行时，`minRequiredVersion` 沿用上一个已发布 Release 的 `latest.json`（前一次的强制升级不会被悄悄解除），取不到（第一次发布）用 `0.0.1`，日志里会写明。回滚的办法是发一个版本号更高的修复版，updater 不支持降级。
 - Actions（`.github/workflows/desktop-release.yml`）：macOS universal 出 dmg + 签名更新包，Windows 出 NSIS 安装器 + 签名；release job 用 `scripts/release_lib.py prepare` 把它们改成不含空格的名字（`Kiro-Gateway_<版本>_universal.dmg`、`Kiro-Gateway.app.tar.gz`、`Kiro-Gateway_<版本>_x64-setup.exe` 及各自的 `.sig`），生成 `latest.json`（URL 是 `https://github.com/<仓库>/releases/download/<tag>/<文件名>`），把这些文件原样挂到 Release，更新说明也取自 tag 正文。手动 `workflow_dispatch` 只出包不发布。
 - `latest.json` 里 `manualDownload.darwin` / `.windows` 是 dmg / setup.exe 直链，强制升级下载失败时界面显示它。macOS 的 `darwin-aarch64` 与 `darwin-x86_64` 指向同一个 universal 更新包。
 - 仓库私有期间，App 取不到清单（未登录访问私有仓库资产返回 404），检查更新会静默失败，不影响使用；仓库公开后生效。
-- 签名私钥：`~/.kiro-gateway/desktop-updater.key`（无密码，权限 600，`*.key` 已被忽略，绝不进仓库）；Actions 用的是 Secret `TAURI_SIGNING_PRIVATE_KEY`。公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`。私钥丢了，旧版就收不到之后的更新；重新生成要换公钥并让用户手动装一次。
+- 签名私钥：`~/.kiro-gateway/desktop-updater.key`（无密码，权限 600，`*.key` 已被忽略，绝不进仓库）；Actions 用的是 Secret `TAURI_SIGNING_PRIVATE_KEY`。公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`。本 fork 使用独立签名密钥，原仓库版本需手动安装本仓库版本一次。私钥丢了，旧版就收不到之后的更新；重新生成要换公钥并让用户手动装一次。
 - 本机试跑清单生成：`release_lib.py prepare --version X --base-url https://github.com/<仓库>/releases/download/desktop-vX --tag-body body.txt --bundle-dir <mac bundle> --windows-dir <win bundle> --out <目录> [--previous-manifest 上一个 latest.json]`，上传用的文件在 `<目录>/assets/`。
 - 脚本逻辑在 `scripts/release_lib.py`（只用标准库），测试：`/opt/miniconda3/bin/python -I -m unittest discover -s desktop/scripts -p 'test_release_lib.py' -v`（不联网）。

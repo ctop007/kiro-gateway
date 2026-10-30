@@ -1,6 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "resources": {
       "resources/gateway/": null,
       "resources/gateway-aarch64/": "gateway-aarch64/",

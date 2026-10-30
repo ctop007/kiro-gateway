@@ -38,8 +38,11 @@ import httpx
 from fastapi import HTTPException
 from loguru import logger
 
-from kiro.config import MAX_RETRIES, BASE_RETRY_DELAY, FIRST_TOKEN_MAX_RETRIES, STREAMING_READ_TIMEOUT
-from kiro.auth import KiroAuthManager
+from kiro.config import (
+    MAX_RETRIES, BASE_RETRY_DELAY, FIRST_TOKEN_MAX_RETRIES,
+    STREAMING_READ_TIMEOUT, KIRO_SSO_LEGACY_FALLBACK,
+)
+from kiro.auth import AuthType, KiroAuthManager
 from kiro.utils import get_kiro_headers
 from kiro.network_errors import classify_network_error, get_short_error_message, NetworkErrorInfo
 
@@ -167,6 +170,31 @@ class KiroHttpClient:
                 # Propagating here could mask the original exception
                 logger.warning(f"Error closing HTTP client: {e}")
     
+    @staticmethod
+    def _is_sso_compatibility_error(response: httpx.Response) -> bool:
+        """Recognize only runtime's rejected token or missing profile responses.
+
+        Args:
+            response: An error response whose body has already been buffered.
+
+        Returns:
+            Whether Q generation without a profile is an appropriate retry.
+        """
+        try:
+            body = response.json()
+        except ValueError:
+            return False
+        if not isinstance(body, dict):
+            return False
+        message = body.get("message")
+        return (
+            response.status_code == 403
+            and message == "The bearer token included in the request is invalid."
+        ) or (
+            response.status_code == 400
+            and message == "profileArn is required for this request."
+        )
+
     async def request_with_retry(
         self,
         method: str,
@@ -179,7 +207,7 @@ class KiroHttpClient:
         Executes an HTTP request with retry logic.
         
         Automatically handles various error types:
-        - 403: refreshes token via auth_manager.force_refresh() and retries
+        - 403: refreshes once; eligible SSO generation can retry through Q
         - 429: waits with exponential backoff (1s, 2s, 4s)
         - 5xx: waits with exponential backoff
         - Timeouts: waits with exponential backoff
@@ -207,19 +235,36 @@ class KiroHttpClient:
         client = await self._get_client(stream=stream)
         last_error = None
         last_error_info: Optional[NetworkErrorInfo] = None
-        last_response: Optional[httpx.Response] = None  # Для сохранения последнего 429/5xx
+        last_response: Optional[httpx.Response] = None
+        token_refreshed = False
+        fallback_allowed = (
+            KIRO_SSO_LEGACY_FALLBACK
+            and self.auth_manager.auth_type == AuthType.AWS_SSO_OIDC
+            and method.upper() == "POST"
+            and url == f"{self.auth_manager.api_host}/generateAssistantResponse"
+            and isinstance(json_data, dict)
+            and "conversationState" in json_data
+        )
+        use_legacy = fallback_allowed and self.auth_manager.legacy_generation_enabled is True
         
         for attempt in range(max_retries):
             try:
                 # Get current token
                 token = await self.auth_manager.get_access_token()
                 headers = get_kiro_headers(self.auth_manager, token)
+                request_url = self.auth_manager.legacy_generation_url if use_legacy else url
+                # Remove only the cached profile on the compatibility request. The
+                # caller's payload (including history and tools) remains untouched.
+                request_data = (
+                    {key: value for key, value in json_data.items() if key != "profileArn"}
+                    if use_legacy else json_data
+                )
                 
                 # Build request kwargs based on parameters
                 request_kwargs = {"headers": headers}
                 
-                if json_data is not None:
-                    request_kwargs["content"] = json.dumps(json_data).encode()
+                if request_data is not None:
+                    request_kwargs["content"] = json.dumps(request_data).encode()
                 
                 if params is not None:
                     request_kwargs["params"] = params
@@ -227,21 +272,39 @@ class KiroHttpClient:
                 if stream:
                     # Prevent CLOSE_WAIT connection leak (issue #38)
                     headers["Connection"] = "close"
-                    req = client.build_request(method, url, **request_kwargs)
+                    req = client.build_request(method, request_url, **request_kwargs)
                     logger.debug("Sending request to Kiro API...")
                     response = await client.send(req, stream=True)
                 else:
                     logger.debug("Sending request to Kiro API...")
-                    response = await client.request(method, url, **request_kwargs)
+                    response = await client.request(method, request_url, **request_kwargs)
                 
                 # Check status
                 if response.status_code == 200:
+                    if use_legacy:
+                        self.auth_manager.mark_legacy_generation_compatible()
                     return response
                 
-                # 403 - token expired, refresh and retry
-                if response.status_code == 403:
-                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{MAX_RETRIES})")
+                # Buffer before closing so route handlers can still report the real
+                # error. Streaming failures must not leak connections on retries.
+                if response.status_code in (400, 403):
+                    await response.aread()
+                    await response.aclose()
+                    if attempt + 1 >= max_retries:
+                        return response
+                    if (
+                        fallback_allowed and not use_legacy
+                        and (token_refreshed or response.status_code == 400)
+                        and self._is_sso_compatibility_error(response)
+                    ):
+                        logger.warning("Runtime rejected SSO generation; retrying through Q without cached profile")
+                        use_legacy = True
+                        continue
+                    if response.status_code == 400 or token_refreshed:
+                        return response
+                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{max_retries})")
                     await self.auth_manager.force_refresh()
+                    token_refreshed = True
                     continue
                 
                 # 429 - rate limit, wait and retry
