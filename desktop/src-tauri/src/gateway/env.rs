@@ -70,6 +70,7 @@ fn explicit(inputs: &EnvInputs) -> Vec<(&'static str, OsString)> {
         ("FAKE_REASONING", "false".into()),
         ("REQUEST_LOG_DIR", inputs.request_log_dir.clone().into_os_string()),
         ("LOG_LEVEL", "INFO".into()),
+        ("DESKTOP_API_ENABLED", "true".into()),
         // The startup banner has emoji; a redirected stdout on Windows would otherwise use
         // the ANSI code page and raise UnicodeEncodeError (found by the sidecar smoke test).
         ("PYTHONUTF8", "1".into()),

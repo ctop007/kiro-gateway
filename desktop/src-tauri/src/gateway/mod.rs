@@ -37,7 +37,7 @@ pub mod sys;
 pub mod types;
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 
 pub mod commands;
 

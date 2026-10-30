@@ -33,6 +33,7 @@ import { retryCommandFor } from '@/features/update/view'
 import { startErrorView } from '@/features/gateway/view'
 import { commandNameOutcome, resolveCommandName, type CommandNameOutcome } from '@/features/command-name/view'
 import { useAsyncAction } from './useAsyncAction'
+import { useAccount } from './useAccount'
 import { createRaceGuard } from './race-guard'
 
 export const LOG_LIMIT = 200
@@ -258,6 +259,7 @@ export function useAppState() {
     await updateAction.run(() => updateRestartNow())
   }, [updateAction])
 
+  const account = useAccount(gateway)
   const gatewayRunning = gateway?.state === 'running'
   const commandName = resolveCommandName(config, kclaude)
 
@@ -271,6 +273,7 @@ export function useAppState() {
     log,
     models,
     gatewayRunning,
+    account,
     commandName,
     restartNote,
     copied,

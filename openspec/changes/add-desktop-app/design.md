@@ -300,3 +300,10 @@ Rust 侧维护每个月份文件的读取偏移，每 1 秒 `stat` 一次当月�
 ### 15. 前端与 Rust 的契约守卫
 
 `src-tauri/src/contract_tests.rs` 把各 command / event 的返回结构序列化成 JSON，与 `src/lib/ipc-types.ts` 里对应 interface 的字段名逐个比对（读 ts 文件解析），并检查 `CommandMap` 的 18 个命令与 `generate_handler!` 完全一致、Rust 能产生的错误码都在前端的 `IPC_ERROR_CODES` 里。改任何一端的字段而不改另一端，这组测试会失败。
+
+
+### 当前账号与额度扩展（2026-10-30）
+
+用户授权增加当前账号、真实剩余额度和手动 Token/额度刷新。账户卡片调用 `account_get` / `account_refresh_token`，由 Rust 转发到本地 sidecar 的受鉴权桌面接口。Python 复用生成请求的认证管理器及锁，Rust 保持 CLI 数据库只读。`DESKTOP_API_ENABLED=true` 仅由桌面启动环境显式配置；源码服务默认不开放控制接口。
+
+额度从 Kiro management getUsageLimits 获取，身份来自同一响应。默认不使用 CLI 缓存 profile；上游要求 profile 时，用同一凭证解析唯一 profile，避免展示错误账号。缺失数值不填 0，有效试用/奖励计入套餐总额，按量付费单列。刷新前和写回事务中校验源凭证；CLI 外部切号时拒绝覆盖，提示重启网关。请求会话按网关进程隔离，过期响应不覆盖当前界面。

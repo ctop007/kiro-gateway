@@ -383,7 +383,7 @@ fn every_command_of_the_registry_is_registered() {
         .lines()
         .filter_map(|l| l.trim().split_once(": {").map(|(name, _)| name.trim().to_string()))
         .collect();
-    assert_eq!(declared.len(), 18);
+    assert_eq!(declared.len(), 20);
     assert_eq!(registered, declared, "commands in main.rs vs CommandMap in ipc-types.ts");
 }
 
@@ -461,4 +461,18 @@ fn the_ts_parser_itself_catches_a_missing_field() {
     let wrong = serde_json::json!({ "id": "x", "extra": 1 });
     let result = std::panic::catch_unwind(|| matches_interface(&source, "GatewayModel", &wrong));
     assert!(result.is_err());
+}
+
+
+#[test]
+fn account_snapshot_matches_the_frontend_contract() {
+    let value = serde_json::json!({
+        "email": null, "provider": "AWS SSO", "subscription": null,
+        "used": null, "total": null, "remaining": null, "usagePercent": null,
+        "resetAt": null, "overageEnabled": false, "overageUsed": null,
+        "tokenExpiresAt": null, "canRefreshToken": false,
+        "checkedAt": "2026-10-30T00:00:00Z", "tokenRefreshedAt": null, "usageError": null
+    });
+    let snapshot: crate::account::AccountSnapshot = serde_json::from_value(value).unwrap();
+    matches_interface(&ts_source(), "AccountSnapshot", &to_json(&snapshot));
 }

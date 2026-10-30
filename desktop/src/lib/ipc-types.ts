@@ -95,6 +95,26 @@ export interface GatewayModel {
   id: string
 }
 
+// ---------- Account ----------
+
+export interface AccountSnapshot {
+  email: string | null
+  provider: string
+  subscription: string | null
+  used: number | null
+  total: number | null
+  remaining: number | null
+  usagePercent: number | null
+  resetAt: string | null
+  overageEnabled: boolean
+  overageUsed: number | null
+  tokenExpiresAt: string | null
+  canRefreshToken: boolean
+  checkedAt: string
+  tokenRefreshedAt: string | null
+  usageError: string | null
+}
+
 // ---------- 3. env ----------
 
 export type CheckId = 'kiro_cli_installed' | 'kiro_cli_logged_in' | 'login_valid' | 'claude_installed'
@@ -229,6 +249,8 @@ export interface CommandMap {
   gateway_start: { args: undefined; result: GatewayStatus }
   gateway_stop: { args: undefined; result: GatewayStatus }
   gateway_models: { args: undefined; result: GatewayModel[] }
+  account_get: { args: undefined; result: AccountSnapshot }
+  account_refresh_token: { args: undefined; result: AccountSnapshot }
   gateway_reveal_log: { args: undefined; result: null }
   env_check: { args: undefined; result: EnvReport }
   kclaude_status: { args: undefined; result: KclaudeStatus }

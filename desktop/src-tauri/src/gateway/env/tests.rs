@@ -261,3 +261,11 @@ fn unknown_inherited_variables_are_dropped_by_default() {
         assert_eq!(get(&env, name), None, "{name}");
     }
 }
+
+#[test]
+fn desktop_controls_are_explicitly_enabled_by_the_app() {
+    let env = build_env(&inputs(), os(&[("DESKTOP_API_ENABLED", "false")]));
+    let values: Vec<_> = env.iter().filter(|(key, _)| key == "DESKTOP_API_ENABLED").collect();
+    assert_eq!(values.len(), 1);
+    assert_eq!(get(&env, "DESKTOP_API_ENABLED"), Some("true"));
+}

@@ -571,6 +571,10 @@ app.include_router(openai_router)
 # Anthropic-compatible API: /v1/messages
 app.include_router(anthropic_router)
 
+# Desktop-only controls reuse the runtime account owner.
+from kiro.desktop_account import router as desktop_account_router
+app.include_router(desktop_account_router)
+
 
 # --- Uvicorn log config ---
 # Minimal configuration for redirecting uvicorn logs to loguru.

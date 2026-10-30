@@ -27,6 +27,7 @@ Manages the lifecycle of access tokens:
 - Support for both Kiro Desktop Auth and AWS SSO OIDC (kiro-cli)
 """
 
+from contextlib import closing
 import asyncio
 import json
 import os
@@ -91,6 +92,10 @@ class AuthType(Enum):
     """
     KIRO_DESKTOP = "kiro_desktop"
     AWS_SSO_OIDC = "aws_sso_oidc"
+
+
+class CredentialSourceChanged(ValueError):
+    """The CLI credential source changed while the desktop gateway was running."""
 
 
 class KiroAuthManager:
@@ -175,6 +180,9 @@ class KiroAuthManager:
         
         # Track which SQLite key we loaded credentials from (for saving back to correct location)
         self._sqlite_token_key: Optional[str] = None
+        self._sqlite_loaded_tokens = None
+        self._desktop_refresh_active = False
+        self._provider = None
         
         self._access_token: Optional[str] = None
         self._expires_at: Optional[datetime] = None
@@ -229,6 +237,7 @@ class KiroAuthManager:
         sso_region_for_oidc = self._sso_region or region
         self._refresh_url = get_kiro_refresh_url(sso_region_for_oidc)
         self._api_host = get_kiro_api_host(final_api_region)
+        self._management_host = f"https://management.{final_api_region}.kiro.dev"
         self._q_host = get_kiro_q_host(final_api_region)
         # Compatibility is learned per account, never persisted into the CLI database.
         self._legacy_generation_url = f"https://q.{final_api_region}.amazonaws.com/generateAssistantResponse"
@@ -300,6 +309,8 @@ class KiroAuthManager:
             
             if token_row:
                 token_data = json.loads(token_row[0])
+                self._sqlite_loaded_tokens = (token_data.get("access_token"), token_data.get("refresh_token"))
+                self._provider = token_data.get("provider")
                 if token_data:
                     # Load token fields (using snake_case as in Rust struct)
                     if 'access_token' in token_data:
@@ -551,6 +562,10 @@ class KiroAuthManager:
         if not self._sqlite_db:
             return
         
+        if self._desktop_refresh_active:
+            self._save_desktop_credentials()
+            return
+
         # Check read-only mode
         if SQLITE_READONLY:
             logger.debug("SQLite write-back disabled (SQLITE_READONLY=true)")
@@ -637,7 +652,10 @@ class KiroAuthManager:
                 (token_json, key)
             )
             
-            return cursor.rowcount > 0
+            saved = cursor.rowcount > 0
+            if saved:
+                self._sqlite_loaded_tokens = (self._access_token, self._refresh_token)
+            return saved
             
         except Exception as e:
             logger.debug(f"Failed to save to key {key}: {e}")
@@ -778,6 +796,10 @@ class KiroAuthManager:
         try:
             await self._do_aws_sso_oidc_refresh()
         except httpx.HTTPStatusError as e:
+            # An explicit desktop operation must not silently switch credential owners.
+            if self._desktop_refresh_active:
+                self.assert_desktop_source_current()
+                raise
             # 400 = invalid_request, likely stale token after kiro-cli re-login
             if e.response.status_code == 400 and self._sqlite_db:
                 logger.warning("Token refresh failed with 400, reloading credentials from SQLite and retrying...")
@@ -1001,3 +1023,70 @@ class KiroAuthManager:
     def auth_type(self) -> AuthType:
         """Authentication type (KIRO_DESKTOP or AWS_SSO_OIDC)."""
         return self._auth_type
+
+
+    @property
+    def management_host(self) -> str:
+        """Account-management endpoint in the resolved API region."""
+        return self._management_host
+
+    def desktop_metadata(self) -> dict:
+        """Return only display metadata, never tokens or OAuth registration fields."""
+        providers = {"Github": "GitHub", "GitHub": "GitHub", "Google": "Google", "BuilderId": "Builder ID"}
+        return {
+            "provider": providers.get(self._provider if isinstance(self._provider, str) else None, "AWS SSO" if self._auth_type == AuthType.AWS_SSO_OIDC else "Kiro"),
+            "tokenExpiresAt": self._expires_at.isoformat() if self._expires_at else None,
+            "canRefreshToken": bool(self._refresh_token) and not (self._sqlite_db and SQLITE_READONLY),
+        }
+
+    def _check_desktop_cursor(self, cursor: sqlite3.Cursor) -> None:
+        """Refuse a different active CLI key/token rather than overwriting a switched account."""
+        for key in SQLITE_TOKEN_KEYS:
+            row = cursor.execute("SELECT value FROM auth_kv WHERE key = ?", (key,)).fetchone()
+            if row:
+                data = json.loads(row[0])
+                if isinstance(data, dict) and key == self._sqlite_token_key and (data.get("access_token"), data.get("refresh_token")) == self._sqlite_loaded_tokens:
+                    return
+                break
+        raise CredentialSourceChanged("CLI credentials changed")
+
+    def assert_desktop_source_current(self) -> None:
+        """Check the selected CLI account without modifying or creating its database."""
+        if self._sqlite_db:
+            try:
+                uri = Path(self._sqlite_db).expanduser().resolve().as_uri() + "?mode=ro"
+                with closing(sqlite3.connect(uri, uri=True, timeout=1)) as conn:
+                    self._check_desktop_cursor(conn.cursor())
+            except (sqlite3.Error, ValueError, TypeError) as exc:
+                raise CredentialSourceChanged("CLI credentials unavailable or changed") from exc
+
+    def _save_desktop_credentials(self) -> None:
+        """Compare the source and persist rotated tokens in one write transaction."""
+        uri = Path(self._sqlite_db).expanduser().resolve().as_uri() + "?mode=rw"
+        try:
+            with closing(sqlite3.connect(uri, uri=True, timeout=2)) as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.cursor()
+                self._check_desktop_cursor(cursor)
+                if not self._try_save_to_key(cursor, self._sqlite_token_key):
+                    raise ValueError("Cannot persist refreshed credentials")
+        except sqlite3.Error as exc:
+            raise ValueError("Cannot persist refreshed credentials") from exc
+
+    async def refresh_for_desktop(self) -> None:
+        """Renew the runtime token under its existing lock, protecting CLI account switches.
+
+        Raises:
+            CredentialSourceChanged: CLI account changed before or during refresh.
+            ValueError: Refresh is unavailable or could not be persisted.
+            httpx.HTTPError: Provider rejected or could not complete the refresh.
+        """
+        async with self._lock:
+            self.assert_desktop_source_current()
+            if not self.desktop_metadata()["canRefreshToken"]:
+                raise ValueError("Token cannot be refreshed")
+            self._desktop_refresh_active = True
+            try:
+                await self._refresh_token_request()
+            finally:
+                self._desktop_refresh_active = False

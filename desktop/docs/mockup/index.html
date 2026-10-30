@@ -227,6 +227,22 @@ input#cmdName { width: 168px; }
   .setting { grid-template-columns: 1fr; gap: 6px; }
   td.hide-sm, th.hide-sm { display: none; }
 }
+
+/* ---------- Current provider account ---------- */
+.home-summary { grid-column: 1 / -1; }
+.account-heading, .account-identity, .account-quota-row, .account-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-heading h2 { margin-bottom: 0; }
+.account-badge { background: var(--paper); color: var(--muted); border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+.account-identity { margin: 10px 0; }
+.account-identity strong { overflow-wrap: anywhere; min-width: 0; }
+.account-quota-row { font-size: 12px; }
+.account-progress { width: 100%; height: 6px; margin: 8px 0; border: 0; border-radius: 6px; overflow: hidden; background: var(--paper); accent-color: var(--on); }
+.account-progress::-webkit-progress-bar { background: var(--paper); }
+.account-progress::-webkit-progress-value { background: var(--on); border-radius: 6px; }
+.account-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 11px; margin-top: 10px; }
+.account-actions { justify-content: flex-start; margin-top: 12px; }
+.account-empty { color: var(--muted); margin-bottom: 0; }
+
 </style>
 </head>
 <body>
@@ -305,6 +321,19 @@ input#cmdName { width: 168px; }
             </div>
 
             <div class="panel">
+              <h2>当前账号</h2>
+              <div class="account-identity"><strong>sa***@***.com</strong><button class="btn ghost">显示</button></div>
+              <div class="account-quota-row"><span>KIRO PRO+ · GitHub</span><span>6.96%</span></div>
+              <progress class="account-progress" max="100" value="6.96"></progress>
+              <div class="account-quota-row"><span>139.25 / 2,000 credits</span><strong>剩余 1,860.75</strong></div>
+              <div class="account-meta">Token 到期 10/30 20:30</div>
+              <div class="account-actions"><button class="btn">刷新额度</button><button class="btn">刷新 Token</button></div>
+            </div>
+
+          </div>
+
+          <div class="col">
+            <div class="panel">
               <h2>cclaude 命令</h2>
               <p class="kc-state" id="kcState"></p>
               <div class="cmd"><code>cclaude</code><span class="hint" id="kcHint">用法和 claude 一样</span></div>
@@ -314,18 +343,18 @@ input#cmdName { width: 168px; }
                 <dt>haiku</dt><dd>claude-haiku-4.5</dd>
               </dl>
             </div>
-          </div>
-
-          <div class="col">
             <div class="panel">
               <h2>运行环境</h2>
               <ul class="checks" id="checks"></ul>
               <button class="btn recheck">重新检测</button>
             </div>
+
+          </div>
+          <div class="home-summary">
             <div class="panel">
               <div class="usage-strip">
-                <div><span class="num" id="todayNum">1.84</span><span class="lbl">今日 credits，32 次请求</span></div>
-                <div><span class="num">46.20</span><span class="lbl">本月 credits</span></div>
+                <div><span class="num" id="todayNum">1.84</span><span class="lbl">网关今日 credits，32 次请求</span></div>
+                <div><span class="num">46.20</span><span class="lbl">网关本月 credits</span></div>
                 <button class="btn" data-goto="logs">查看日志</button>
               </div>
             </div>

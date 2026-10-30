@@ -387,3 +387,23 @@ type UpdateStatus = UpdateState & {
 - 2026-10-22：v1，scaffold 批次写定。相对任务描述的补充：`gateway_reveal_log`（mockup「打开完整日志」按钮需要）、`AppConfig.gatewayWanted` / `upgradeRequired`、`ConfigUpdateResult.restartRequired`、`EnvReport.kiroCliPath` / `claudePath` / `loginExpiresAt`、`KclaudeVerify.fix`（Windows 执行策略）、`request-log-appended` 跨日空推送、统一错误形状 `{ code, message }`。开机自启改由 Rust 持有（`config_update`），前端不注册 autostart 权限。
 - 2026-10-23：联调批次。`EnvReport.loginCommand`；`RequestLogAppended.reset`；`gatewayWanted` 语义；`config_update` 的自启失败语义；`env_not_ready` 的 `message`；失败文案；"(未知)" 改为 "未知模型"；kclaude.env 格式与 `kclaude.removed`；磁盘文件与 debug 开关两节。
 - 2026-10-23：修复批 B-update。`UpdateState` 新增 `installing`（启动时安装待更新）；写明下载 60 秒无进度超时和启动顺序。
+
+
+## 7. 当前账号（account）
+
+`account_get`、`account_refresh_token` 均无参数，返回 `AccountSnapshot`：
+
+- `email`、`subscription`、`resetAt`、`tokenExpiresAt`、`tokenRefreshedAt`：`string | null`。
+- `provider`、`checkedAt`：`string`；`canRefreshToken`、`overageEnabled`：`boolean`。
+- `used`、`total`、`remaining`、`usagePercent`、`overageUsed`：`number | null`。
+- `usageError`：`string | null`，只包含可展示的固定提示，不携带上游正文。
+
+读取和手动刷新均通过 Rust 调用正在运行的本机 sidecar（固定 loopback 地址、禁代理/重定向、携带访问密钥）。sidecar 的桌面接口默认关闭，由 App 显式启用，复用实际生成请求使用的单账号 auth manager，不读取 Account Manager 的账号列表。Rust 仍不写 CLI 数据库，Token 不经 IPC 返回。
+
+`account_get` 获取账号信息和实时额度；`account_refresh_token` 通过现有认证管理器刷新并写回 CLI 凭证，再尝试查询额度。Token 成功但额度查询失败时仍返回新的到期时间和 `tokenRefreshedAt`，`usageError` 独立展示。缺失额度返回 null，不视为 0。总额包含有效试用/奖励；付费超额单独展示，不算入剩余套餐额度。数值优先使用 WithPrecision 字段。
+
+未运行时返回 `gateway_not_running`；登录或 CLI 凭证变化返回 `env_not_ready`（重启网关同步/重新登录）；网络、上游及解析失败返回 `gateway_unreachable`。手动刷新共用认证锁，写回前以事务核对 CLI 凭证来源，避免覆盖刷新期间发生的切号。页面在启动、进程会话变化和重新可见时读取；同一会话刷新互斥，旧会话异步结果不能覆盖新会话；失败保留的快照明确标为旧数据。关停时不展示为当前账号。
+
+### 变更记录补充
+
+- 2026-10-30：增加当前账号卡片、真实额度和 Token 手动刷新链路；本地请求统计与账号额度分开呈现。

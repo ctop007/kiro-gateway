@@ -634,3 +634,6 @@ def get_kiro_q_host(region: str) -> str:
     """Return Q API host for the specified region."""
     return KIRO_Q_HOST_TEMPLATE.format(region=region)
 
+
+# Local desktop controls are enabled only by the desktop sidecar launcher.
+DESKTOP_API_ENABLED: bool = os.getenv("DESKTOP_API_ENABLED", "false").lower() == "true"

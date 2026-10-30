@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod app_config;
 mod env_check;
 mod gateway;
@@ -146,6 +147,8 @@ fn main() {
             gateway::commands::gateway_start,
             gateway::commands::gateway_stop,
             gateway::commands::gateway_models,
+            account::account_get,
+            account::account_refresh_token,
             gateway::commands::gateway_reveal_log,
             env_check::commands::env_check,
             kclaude::commands::kclaude_status,

@@ -470,6 +470,14 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       if (gateway.state !== 'running') throw new MockError('gateway_not_running', '网关还没有运行')
       return MODELS.map((id) => ({ id }))
     },
+    account_get: () => {
+      if (gateway.state !== 'running') throw new MockError('gateway_not_running', '启动网关后查看账号')
+      return { email: 'sample@example.com', provider: 'GitHub', subscription: 'KIRO PRO+', used: 139.25,
+        total: 2000, remaining: 1860.75, usagePercent: 6.9625, resetAt: '2026-11-01T00:00:00Z',
+        overageEnabled: false, overageUsed: 0, tokenExpiresAt: '2026-10-31T00:00:00Z',
+        canRefreshToken: true, checkedAt: iso(new Date()), tokenRefreshedAt: null, usageError: null }
+    },
+    account_refresh_token: () => ({ ...handlers.account_get(undefined), tokenRefreshedAt: iso(new Date()) }),
     gateway_reveal_log: () => null,
 
     env_check: () => envReport(),
